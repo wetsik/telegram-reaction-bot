@@ -1,5 +1,4 @@
 import os
-import time
 import random
 import asyncio
 import threading
@@ -19,22 +18,18 @@ client = TelegramClient(
     API_HASH
 )
 
-REACTION_POOLS = {
-    "funny": ["😂", "🤣", "💀", "😭", "😹", "😆"],
-    "shock": ["😳", "😱", "👀", "🤯", "😮"],
-    "hype": ["🔥", "💯", "⚡", "😎", "🚀", "👏"],
-    "sad": ["😭", "😢", "💔", "🥲"],
-    "love": ["❤️", "🥰", "💖", "🙏"],
-    "anger": ["😡", "💀", "👀", "🤦"],
-    "neutral": ["👀", "👍", "🙂"]
-}
+EMOJIS = [
+    "😂", "🤣", "💀", "😭", "😹", "😆",
+    "😳", "😱", "👀", "🤯", "😮",
+    "🔥", "💯", "⚡", "😎", "🚀", "👏",
+    "😢", "💔", "🥲",
+    "❤️", "🥰", "💖", "🙏",
+    "😡", "🤦", "👍", "🙂", "🗿"
+]
 
-MIN_DELAY = float(os.environ.get("MIN_DELAY", "1.0"))
-MAX_DELAY = float(os.environ.get("MAX_DELAY", "3.0"))
-COOLDOWN_SECONDS = int(os.environ.get("COOLDOWN_SECONDS", "7"))
-GLOBAL_REACTION_CHANCE = float(os.environ.get("GLOBAL_REACTION_CHANCE", "0.70"))
-
-last_reaction_time = 0.0
+MIN_DELAY = float(os.environ.get("MIN_DELAY", "0.3"))
+MAX_DELAY = float(os.environ.get("MAX_DELAY", "1.2"))
+REACTION_CHANCE = float(os.environ.get("REACTION_CHANCE", "1.0"))
 
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -55,112 +50,16 @@ def run_health_server():
     server.serve_forever()
 
 
-def pick_reaction(text: str):
-    if not text or len(text.strip()) < 2:
-        return None, "neutral", 0
-
-    text = text.lower().strip().replace("ё", "е")
-
-    score = {
-        "funny": 0,
-        "shock": 0,
-        "hype": 0,
-        "sad": 0,
-        "love": 0,
-        "anger": 0,
-        "neutral": 0
-    }
-
-    # Смех / рофл
-    if any(x in text for x in ["аха", "ахах", "хаха", "лол", "ору", "ржу", "угар", "rofl", "lol", "lmao"]):
-        score["funny"] += 3
-
-    # Шок / удивление
-    if "??" in text or "!!" in text or "!?" in text:
-        score["shock"] += 2
-    if any(x in text for x in ["жесть", "капец", "офиг", "нифига", "серьезно", "реально", "what", "wtf", "omg", "no way"]):
-        score["shock"] += 2
-
-    # Хайп / одобрение
-    if any(x in text for x in ["круто", "топ", "имба", "кайф", "мощно", "сильно", "best", "cool", "nice", "great", "awesome"]):
-        score["hype"] += 3
-
-    # Грусть
-    if any(x in text for x in ["груст", "печал", "жалко", "обидно", "плохо", "sad", "sorry", "unfortunately"]):
-        score["sad"] += 3
-
-    # Тепло / благодарность
-    if any(x in text for x in ["спасибо", "благодар", "thanks", "thank you", "ty", "love you", "люблю"]):
-        score["love"] += 3
-
-    # Злость / раздражение
-    if any(x in text for x in ["бесит", "злит", "ненавижу", "достал", "hate", "annoying", "angry", "mad"]):
-        score["anger"] += 3
-
-    # Эмодзи в сообщении тоже учитываем
-    if any(x in text for x in ["😂", "🤣", "😭"]):
-        score["funny"] += 2
-    if any(x in text for x in ["🔥", "💯", "😎"]):
-        score["hype"] += 2
-    if any(x in text for x in ["😢", "💔", "🥲"]):
-        score["sad"] += 2
-    if any(x in text for x in ["😡", "🤬"]):
-        score["anger"] += 2
-    if any(x in text for x in ["😳", "😱", "👀"]):
-        score["shock"] += 2
-    if any(x in text for x in ["❤️", "🥰", "🙏"]):
-        score["love"] += 2
-
-    # Капс и длинные знаки препинания
-    if len(text) > 4 and text.upper() == text and any(ch.isalpha() for ch in text):
-        score["shock"] += 2
-
-    best_label = max(score, key=score.get)
-    best_score = score[best_label]
-
-    if best_score == 0:
-        return None, "neutral", 0
-
-    skip_chances = {
-        "funny": 0.20,
-        "shock": 0.25,
-        "hype": 0.20,
-        "sad": 0.30,
-        "love": 0.35,
-        "anger": 0.40,
-        "neutral": 0.85
-    }
-
-    if random.random() < skip_chances.get(best_label, 0.30):
-        return None, best_label, best_score
-
-    emoji = random.choice(REACTION_POOLS[best_label])
-    return emoji, best_label, best_score
-
-
 @client.on(events.NewMessage)
 async def handle_new_message(event):
-    global last_reaction_time
-
     if event.out:
         return
 
-    if not event.raw_text:
-        return
-
-    if random.random() > GLOBAL_REACTION_CHANCE:
-        return
-
-    now = time.time()
-    if now - last_reaction_time < COOLDOWN_SECONDS:
+    if random.random() > REACTION_CHANCE:
         return
 
     try:
-        emoji, label, score = pick_reaction(event.raw_text)
-
-        if not emoji:
-            print(f"skip | label={label} | score={score}")
-            return
+        emoji = random.choice(EMOJIS)
 
         await asyncio.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
 
@@ -172,8 +71,7 @@ async def handle_new_message(event):
             reaction=[types.ReactionEmoji(emoticon=emoji)]
         ))
 
-        last_reaction_time = time.time()
-        print(f"reacted {emoji} | label={label} | score={score}")
+        print(f"reacted {emoji} to message {event.id}")
 
     except FloodWaitError as e:
         print(f"FloodWait: {e.seconds}s")
