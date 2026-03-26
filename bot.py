@@ -11,35 +11,18 @@ from telethon.sessions import StringSession
 
 from transformers import pipeline
 
-# =========================
-# ENV
-# =========================
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING = os.environ["SESSION_STRING"]
 
-# =========================
-# TELEGRAM CLIENT
-# =========================
 client = TelegramClient(
     StringSession(SESSION_STRING),
     API_ID,
     API_HASH
 )
 
-# =========================
-# LIGHTER MODEL FOR CLOUD
-# =========================
-# Более лёгкая многоязычная zero-shot модель
-classifier = pipeline(
-    task="zero-shot-classification",
-    model="joeddav/xlm-roberta-large-xnli",
-    device=-1
-)
+classifier = None
 
-# =========================
-# LOGIC
-# =========================
 CANDIDATE_LABELS = [
     "funny",
     "shock",
@@ -68,7 +51,39 @@ GLOBAL_REACTION_CHANCE = float(os.environ.get("GLOBAL_REACTION_CHANCE", "0.70"))
 last_reaction_time = 0.0
 
 
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, format, *args):
+        return
+
+
+def run_health_server():
+    port = int(os.environ.get("PORT", "10000"))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    print(f"Health server started on port {port}")
+    server.serve_forever()
+
+
+def load_model():
+    global classifier
+    print("Loading classifier...")
+    classifier = pipeline(
+        task="zero-shot-classification",
+        model="joeddav/xlm-roberta-large-xnli",
+        device=-1
+    )
+    print("Classifier loaded.")
+
+
 def pick_reaction(text: str):
+    if classifier is None:
+        return None, "model_not_ready", 0.0
+
     if not text or len(text.strip()) < 2:
         return None, None, None
 
@@ -159,33 +174,14 @@ async def handle_new_message(event):
         print("ERROR:", e)
 
 
-# =========================
-# SIMPLE HTTP SERVER FOR RENDER
-# =========================
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(b"ok")
-
-    def log_message(self, format, *args):
-        return
-
-
-def run_health_server():
-    port = int(os.environ.get("PORT", "10000"))
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    print(f"Health server started on port {port}")
-    server.serve_forever()
-
-
 async def main():
+    print("Starting Telegram client...")
+    await client.start()
+    load_model()
     print("Userbot started...")
     await client.run_until_disconnected()
 
 
 if __name__ == "__main__":
     threading.Thread(target=run_health_server, daemon=True).start()
-    client.start()
-    client.loop.run_until_complete(main())
+    asyncio.run(main())
