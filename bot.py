@@ -33,7 +33,7 @@ client = TelegramClient(
 # Более лёгкая многоязычная zero-shot модель
 classifier = pipeline(
     task="zero-shot-classification",
-    model="MoritzLaurer/ModernBERT-large-zeroshot-v2.0",
+    model="joeddav/xlm-roberta-large-xnli",
     device=-1
 )
 
