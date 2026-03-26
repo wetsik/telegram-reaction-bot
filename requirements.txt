@@ -1,0 +1,5 @@
+telethon==1.41.2
+transformers==4.44.2
+torch==2.4.1
+sentencepiece==0.2.0
+safetensors==0.4.5
