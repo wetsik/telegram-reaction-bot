@@ -9,8 +9,6 @@ from telethon import TelegramClient, events, functions, types
 from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
 
-from transformers import pipeline
-
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING = os.environ["SESSION_STRING"]
@@ -20,18 +18,6 @@ client = TelegramClient(
     API_ID,
     API_HASH
 )
-
-classifier = None
-
-CANDIDATE_LABELS = [
-    "funny",
-    "shock",
-    "hype",
-    "sad",
-    "love",
-    "anger",
-    "neutral"
-]
 
 REACTION_POOLS = {
     "funny": ["😂", "🤣", "💀", "😭", "😹", "😆"],
@@ -69,48 +55,71 @@ def run_health_server():
     server.serve_forever()
 
 
-def load_model():
-    global classifier
-    print("Loading classifier...")
-    classifier = pipeline(
-        task="zero-shot-classification",
-        model="joeddav/xlm-roberta-large-xnli",
-        device=-1
-    )
-    print("Classifier loaded.")
-
-
 def pick_reaction(text: str):
-    if classifier is None:
-        return None, "model_not_ready", 0.0
-
     if not text or len(text.strip()) < 2:
-        return None, None, None
+        return None, "neutral", 0
 
-    result = classifier(
-        text,
-        candidate_labels=CANDIDATE_LABELS,
-        multi_label=False
-    )
+    text = text.lower().strip().replace("ё", "е")
 
-    top_label = result["labels"][0]
-    top_score = float(result["scores"][0])
-
-    if top_score < 0.45:
-        return None, top_label, top_score
-
-    thresholds = {
-        "funny": 0.52,
-        "shock": 0.50,
-        "hype": 0.50,
-        "sad": 0.50,
-        "love": 0.55,
-        "anger": 0.55,
-        "neutral": 0.60
+    score = {
+        "funny": 0,
+        "shock": 0,
+        "hype": 0,
+        "sad": 0,
+        "love": 0,
+        "anger": 0,
+        "neutral": 0
     }
 
-    if top_score < thresholds.get(top_label, 0.50):
-        return None, top_label, top_score
+    # Смех / рофл
+    if any(x in text for x in ["аха", "ахах", "хаха", "лол", "ору", "ржу", "угар", "rofl", "lol", "lmao"]):
+        score["funny"] += 3
+
+    # Шок / удивление
+    if "??" in text or "!!" in text or "!?" in text:
+        score["shock"] += 2
+    if any(x in text for x in ["жесть", "капец", "офиг", "нифига", "серьезно", "реально", "what", "wtf", "omg", "no way"]):
+        score["shock"] += 2
+
+    # Хайп / одобрение
+    if any(x in text for x in ["круто", "топ", "имба", "кайф", "мощно", "сильно", "best", "cool", "nice", "great", "awesome"]):
+        score["hype"] += 3
+
+    # Грусть
+    if any(x in text for x in ["груст", "печал", "жалко", "обидно", "плохо", "sad", "sorry", "unfortunately"]):
+        score["sad"] += 3
+
+    # Тепло / благодарность
+    if any(x in text for x in ["спасибо", "благодар", "thanks", "thank you", "ty", "love you", "люблю"]):
+        score["love"] += 3
+
+    # Злость / раздражение
+    if any(x in text for x in ["бесит", "злит", "ненавижу", "достал", "hate", "annoying", "angry", "mad"]):
+        score["anger"] += 3
+
+    # Эмодзи в сообщении тоже учитываем
+    if any(x in text for x in ["😂", "🤣", "😭"]):
+        score["funny"] += 2
+    if any(x in text for x in ["🔥", "💯", "😎"]):
+        score["hype"] += 2
+    if any(x in text for x in ["😢", "💔", "🥲"]):
+        score["sad"] += 2
+    if any(x in text for x in ["😡", "🤬"]):
+        score["anger"] += 2
+    if any(x in text for x in ["😳", "😱", "👀"]):
+        score["shock"] += 2
+    if any(x in text for x in ["❤️", "🥰", "🙏"]):
+        score["love"] += 2
+
+    # Капс и длинные знаки препинания
+    if len(text) > 4 and text.upper() == text and any(ch.isalpha() for ch in text):
+        score["shock"] += 2
+
+    best_label = max(score, key=score.get)
+    best_score = score[best_label]
+
+    if best_score == 0:
+        return None, "neutral", 0
 
     skip_chances = {
         "funny": 0.20,
@@ -122,11 +131,11 @@ def pick_reaction(text: str):
         "neutral": 0.85
     }
 
-    if random.random() < skip_chances.get(top_label, 0.30):
-        return None, top_label, top_score
+    if random.random() < skip_chances.get(best_label, 0.30):
+        return None, best_label, best_score
 
-    emoji = random.choice(REACTION_POOLS[top_label])
-    return emoji, top_label, top_score
+    emoji = random.choice(REACTION_POOLS[best_label])
+    return emoji, best_label, best_score
 
 
 @client.on(events.NewMessage)
@@ -164,7 +173,7 @@ async def handle_new_message(event):
         ))
 
         last_reaction_time = time.time()
-        print(f"reacted {emoji} | label={label} | score={score:.3f}")
+        print(f"reacted {emoji} | label={label} | score={score}")
 
     except FloodWaitError as e:
         print(f"FloodWait: {e.seconds}s")
@@ -177,7 +186,6 @@ async def handle_new_message(event):
 async def main():
     print("Starting Telegram client...")
     await client.start()
-    load_model()
     print("Userbot started...")
     await client.run_until_disconnected()
 
