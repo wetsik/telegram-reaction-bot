@@ -442,23 +442,17 @@ def pick_from_pool_avoiding_repeat(chat_id: int, pool: list[str], storage: dict)
 
 
 def pick_reaction_by_label(chat_id: int, label: str) -> str:
+    category_pool = REACTIONS.get(label, REACTIONS["neutral"])
     known_working = list(working_reactions_by_chat[chat_id])
 
-    # если для чата уже есть рабочие реакции — используем в первую очередь их
-    if known_working:
-        category_pool = REACTIONS.get(label, REACTIONS["neutral"])
-        prioritized = [e for e in category_pool if e in known_working]
+    # если среди реакций этой категории уже есть проверенно рабочие — используем их
+    prioritized = [e for e in category_pool if e in known_working]
+    if prioritized:
+        return pick_from_pool_avoiding_repeat(chat_id, prioritized, last_used_reaction)
 
-        if prioritized:
-            return pick_from_pool_avoiding_repeat(chat_id, prioritized, last_used_reaction)
-
-        # если в категории нет совпадений — лучше взять любую уже рабочую,
-        # чем снова ловить Invalid reaction provided
-        return pick_from_pool_avoiding_repeat(chat_id, known_working, last_used_reaction)
-
-    pool = REACTIONS.get(label, REACTIONS["neutral"])
-    return pick_from_pool_avoiding_repeat(chat_id, pool, last_used_reaction)
-
+    # иначе всё равно пробуем реакцию именно из категории,
+    # а не любую "рабочую" типа ❤️
+    return pick_from_pool_avoiding_repeat(chat_id, category_pool, last_used_reaction)
 
 def pick_reply_by_label(chat_id: int, label: str, text: str) -> str:
     if should_roast(text, label):
@@ -684,22 +678,17 @@ async def human_delay():
 async def send_reaction(event, emoji: str):
     reaction_candidates = []
 
-    # сначала пробуем эмодзи, который выбрала логика
+    # сначала пробуем именно ту реакцию, которую выбрала логика
     if emoji:
         reaction_candidates.append(emoji)
 
-    # потом уже те, которые в этом чате точно срабатывали раньше
-    known_working = list(working_reactions_by_chat[event.chat_id])
-    for known in known_working:
-        if known not in reaction_candidates:
-            reaction_candidates.append(known)
-
-    # потом безопасные фолбэки
-    for fallback in ["👍", "🔥", "❤️", "😂", "👀", "🙂", "🤔", "💯", "😢", "😎"]:
+    # потом другие реакции из общего whitelist,
+    # но НЕ подсовываем сразу уже известную ❤️ как основную
+    for fallback in ["👍", "🔥", "😂", "👀", "🤔", "💯", "😢", "😎", "🙂", "❤️"]:
         if fallback not in reaction_candidates:
             reaction_candidates.append(fallback)
 
-    # и в конце остальной общий whitelist
+    # потом остальные safe emoji
     for safe in SAFE_EMOJIS:
         if safe not in reaction_candidates:
             reaction_candidates.append(safe)
@@ -719,19 +708,16 @@ async def send_reaction(event, emoji: str):
 
                 working_reactions_by_chat[event.chat_id].add(candidate)
                 mark_reaction_sent(event.chat_id)
-                print(
-                    f"Reacted {candidate} to message {event.id} in chat {event.chat_id}")
+                print(f"Reacted {candidate} to message {event.id} in chat {event.chat_id}")
                 return
 
             except FloodWaitError:
                 raise
             except Exception as inner_error:
-                print(
-                    f"Reaction {candidate} failed in chat {event.chat_id}: {inner_error}")
+                print(f"Reaction {candidate} failed in chat {event.chat_id}: {inner_error}")
                 continue
 
-        print(
-            f"Skipping reaction for message {event.id} in chat {event.chat_id}: no valid emoji worked")
+        print(f"Skipping reaction for message {event.id} in chat {event.chat_id}: no valid emoji worked")
 
     except FloodWaitError as e:
         print(f"FloodWait on reaction: sleeping for {e.seconds} seconds")
@@ -739,7 +725,6 @@ async def send_reaction(event, emoji: str):
 
     except Exception as e:
         print(f"ERROR while reacting: {e}")
-
 
 async def send_text(event, text: str):
     try:
