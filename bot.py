@@ -45,18 +45,14 @@ RECENT_BOT_TEXTS_LIMIT = int(os.environ.get("RECENT_BOT_TEXTS_LIMIT", "12"))
 MAX_CONTEXT = int(os.environ.get("MAX_CONTEXT", "8"))
 
 # инициативные сообщения
-ENABLE_INIT_MESSAGES = os.environ.get(
-    "ENABLE_INIT_MESSAGES", "true").lower() == "true"
-INACTIVITY_TRIGGER = int(os.environ.get(
-    "INACTIVITY_TRIGGER", "1200"))  # 20 минут
-INACTIVITY_CHECK_INTERVAL = int(
-    os.environ.get("INACTIVITY_CHECK_INTERVAL", "60"))
+ENABLE_INIT_MESSAGES = os.environ.get("ENABLE_INIT_MESSAGES", "true").lower() == "true"
+INACTIVITY_TRIGGER = int(os.environ.get("INACTIVITY_TRIGGER", "1200"))  # 20 минут
+INACTIVITY_CHECK_INTERVAL = int(os.environ.get("INACTIVITY_CHECK_INTERVAL", "60"))
 INIT_MESSAGE_CHANCE = float(os.environ.get("INIT_MESSAGE_CHANCE", "0.60"))
 INIT_MIN_GAP = int(os.environ.get("INIT_MIN_GAP", "1800"))  # 30 минут
 
 # AI-классификация
-USE_AI_CLASSIFICATION = os.environ.get(
-    "USE_AI_CLASSIFICATION", "true").lower() == "true"
+USE_AI_CLASSIFICATION = os.environ.get("USE_AI_CLASSIFICATION", "true").lower() == "true"
 
 # общие
 ENABLE_REACTIONS = True
@@ -77,8 +73,6 @@ client = TelegramClient(
 # =========================================================
 # HEALTH SERVER
 # =========================================================
-
-
 class HealthHandler(BaseHTTPRequestHandler):
     def _send_ok(self, body: bool = False):
         self.send_response(200)
@@ -132,8 +126,13 @@ chat_state = defaultdict(lambda: {
 last_used_reaction = defaultdict(lambda: None)
 last_used_reply = defaultdict(lambda: None)
 
-# успешные реакции по чатам — бот будет запоминать, что реально прошло
-working_reactions_by_chat = defaultdict(set)
+# Память реакций по чату:
+# allowed - точно работают
+# blocked - точно не работают
+reaction_memory_by_chat = defaultdict(lambda: {
+    "allowed": set(),
+    "blocked": set(),
+})
 
 # =========================================================
 # DATA
@@ -174,7 +173,8 @@ PATTERNS = {
     ],
     "agreement": [
         r"\bреал\b", r"\bжиза\b", r"\bсогл\b", r"\bбаза\b",
-        r"\bфакт\b", r"\bименно\b", r"\btrue\b", r"\breal\b"
+        r"\bфакт\b", r"\bименно\b", r"\btrue\b", r"\breal\b",
+        r"\bв точку\b"
     ],
     "disagreement": [
         r"\bнеа\b", r"\bне думаю\b", r"\bсомнительно\b",
@@ -190,7 +190,7 @@ PATTERNS = {
     ],
     "anger": [
         r"\bбесит\b", r"\bзлит\b", r"\bненавижу\b",
-        r"\bужас\b", r"\bвыбесил\b", r"\bгорит\b"
+        r"\bужас\b", r"\bвыбесил\b", r"\bгорит\b", r"\bбред\b"
     ],
     "love": [
         r"\bлюблю\b", r"\bмило\b", r"\bкайф\b",
@@ -206,8 +206,6 @@ PATTERNS = {
     ]
 }
 
-# более широкий список реакций, похожий на доступные в Telegram.
-# бот все равно будет проверять их на практике и запоминать рабочие для чата.
 SAFE_EMOJIS = [
     "👍", "👎", "❤️", "🔥", "🥰",
     "👏", "😁", "🤔", "🤯", "😱",
@@ -217,7 +215,7 @@ SAFE_EMOJIS = [
     "😐", "💋", "😈", "😴", "😭",
     "🤓", "👻", "👀", "🙈", "😇",
     "😨", "🤝", "🤗", "🗿", "🆒",
-    "😂", "🤣", "💀", "😎", "🙂"
+    "😂", "🤣", "💀", "😎"
 ]
 
 REACTIONS = {
@@ -225,13 +223,13 @@ REACTIONS = {
     "shock": ["😱", "👀", "🤯", "🔥"],
     "hype": ["🔥", "💯", "⚡", "🏆", "🗿"],
     "sad": ["😢", "💔", "😭"],
-    "love": ["❤️", "🥰", "😍", "💋"],
+    "love": ["❤️", "🥰", "💋"],
     "anger": ["😡", "🤨", "💀"],
     "question": ["🤔", "👀", "😐", "🗿"],
     "agreement": ["💯", "🔥", "👍", "🗿"],
     "disagreement": ["🤨", "👎", "😐", "🤔", "🤡"],
-    "greeting": ["😎", "❤️", "🙂", "👋"],
-    "neutral": ["👀", "🗿", "🙂", "🔥", "👍"]
+    "greeting": ["😎", "❤️", "👍", "🔥"],
+    "neutral": ["👀", "🗿", "🔥", "👍", "😐"]
 }
 
 TEXT_REPLIES = {
@@ -368,8 +366,6 @@ INIT_END = [
 # =========================================================
 # HELPERS
 # =========================================================
-
-
 def clean_text(text: str) -> str:
     text = text.strip().lower()
     text = re.sub(r"\s+", " ", text)
@@ -430,6 +426,9 @@ def should_roast(text: str, category: str) -> bool:
 
 
 def pick_from_pool_avoiding_repeat(chat_id: int, pool: list[str], storage: dict) -> str:
+    if not pool:
+        return "👍"
+
     last = storage[chat_id]
     choices = pool[:]
 
@@ -440,19 +439,6 @@ def pick_from_pool_avoiding_repeat(chat_id: int, pool: list[str], storage: dict)
     storage[chat_id] = picked
     return picked
 
-
-def pick_reaction_by_label(chat_id: int, label: str) -> str:
-    category_pool = REACTIONS.get(label, REACTIONS["neutral"])
-    known_working = list(working_reactions_by_chat[chat_id])
-
-    # если среди реакций этой категории уже есть проверенно рабочие — используем их
-    prioritized = [e for e in category_pool if e in known_working]
-    if prioritized:
-        return pick_from_pool_avoiding_repeat(chat_id, prioritized, last_used_reaction)
-
-    # иначе всё равно пробуем реакцию именно из категории,
-    # а не любую "рабочую" типа ❤️
-    return pick_from_pool_avoiding_repeat(chat_id, category_pool, last_used_reaction)
 
 def pick_reply_by_label(chat_id: int, label: str, text: str) -> str:
     if should_roast(text, label):
@@ -490,11 +476,11 @@ def score_with_rules(text: str, context_messages):
         scores["hype"] += 0.7
         scores["love"] += 0.4
 
-    # Контекст учитываем только если текущее сообщение само хоть немного подходит
+    # Контекст funny учитываем только если текущее сообщение уже хоть немного funny
     if scores["funny"] > 0 and any(x in joined for x in ["ахах", "лол", "ору"]):
         scores["funny"] += 0.2
 
-    # Если сообщение короткое и почти без явных признаков — считаем neutral
+    # Стабилизация neutral для коротких / обычных фраз
     best = max(scores.values())
     if best < 1.0:
         scores["neutral"] = max(scores["neutral"], 1.0)
@@ -538,15 +524,13 @@ async def classify_with_hf(text: str):
                 raw_text = await resp.text()
 
                 if resp.status != 200:
-                    print(
-                        f"HF API error: status={resp.status}, body={raw_text[:500]}")
+                    print(f"HF API error: status={resp.status}, body={raw_text[:500]}")
                     return None
 
                 try:
                     data = json.loads(raw_text)
                 except Exception as parse_error:
-                    print(
-                        f"HF JSON parse error: {repr(parse_error)} | body={raw_text[:500]}")
+                    print(f"HF JSON parse error: {repr(parse_error)} | body={raw_text[:500]}")
                     return None
 
         # Формат 1: {"labels": [...], "scores": [...]}
@@ -562,15 +546,13 @@ async def classify_with_hf(text: str):
                 best_item = max(data, key=lambda x: float(x.get("score", 0)))
                 return best_item["label"], float(best_item["score"])
 
-            # запасной случай
             first = data[0]
             labels = first.get("labels", [])
             scores = first.get("scores", [])
             if labels and scores:
                 return labels[0], float(scores[0])
 
-        print(
-            f"HF unexpected response format: type={type(data).__name__}, data={str(data)[:500]}")
+        print(f"HF unexpected response format: type={type(data).__name__}, data={str(data)[:500]}")
         return None
 
     except asyncio.TimeoutError as e:
@@ -671,53 +653,99 @@ def generate_init_message() -> str:
     return text
 
 
+def build_reaction_candidates(chat_id: int, label: str, preferred_emoji: str | None):
+    memory = reaction_memory_by_chat[chat_id]
+    allowed = memory["allowed"]
+    blocked = memory["blocked"]
+
+    category_pool = REACTIONS.get(label, REACTIONS["neutral"])
+
+    # 1. Рабочие реакции из нужной категории
+    allowed_category = [e for e in category_pool if e in allowed and e not in blocked]
+
+    # 2. Неизвестные реакции из нужной категории
+    unknown_category = [e for e in category_pool if e not in allowed and e not in blocked]
+
+    # 3. Рабочие safe reactions
+    allowed_fallback = [e for e in SAFE_EMOJIS if e in allowed and e not in blocked and e not in allowed_category]
+
+    # 4. Неизвестные safe reactions
+    unknown_fallback = [e for e in SAFE_EMOJIS if e not in allowed and e not in blocked and e not in unknown_category]
+
+    random.shuffle(allowed_category)
+    random.shuffle(unknown_category)
+    random.shuffle(allowed_fallback)
+    random.shuffle(unknown_fallback)
+
+    candidates = []
+
+    if preferred_emoji and preferred_emoji not in blocked:
+        candidates.append(preferred_emoji)
+
+    for bucket in [allowed_category, unknown_category, allowed_fallback, unknown_fallback]:
+        for emoji in bucket:
+            if emoji not in candidates:
+                candidates.append(emoji)
+
+    # На всякий случай, если всё пусто
+    if not candidates:
+        candidates = ["👍", "🔥", "👀"]
+
+    return candidates
+
+
+def pick_reaction_by_label(chat_id: int, label: str) -> str:
+    category_pool = REACTIONS.get(label, REACTIONS["neutral"])
+    memory = reaction_memory_by_chat[chat_id]
+    allowed = memory["allowed"]
+    blocked = memory["blocked"]
+
+    # если среди реакций категории уже есть рабочие — берем из них
+    allowed_category = [e for e in category_pool if e in allowed and e not in blocked]
+    if allowed_category:
+        return pick_from_pool_avoiding_repeat(chat_id, allowed_category, last_used_reaction)
+
+    # иначе пробуем любую реакцию именно из категории, которая ещё не заблокирована
+    usable_category = [e for e in category_pool if e not in blocked]
+    return pick_from_pool_avoiding_repeat(chat_id, usable_category, last_used_reaction)
+
+
 async def human_delay():
     await asyncio.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
 
 
-async def send_reaction(event, emoji: str):
-    reaction_candidates = []
-
-    # сначала пробуем именно ту реакцию, которую выбрала логика
-    if emoji:
-        reaction_candidates.append(emoji)
-
-    # потом другие реакции из общего whitelist,
-    # но НЕ подсовываем сразу уже известную ❤️ как основную
-    for fallback in ["👍", "🔥", "😂", "👀", "🤔", "💯", "😢", "😎", "🙂", "❤️"]:
-        if fallback not in reaction_candidates:
-            reaction_candidates.append(fallback)
-
-    # потом остальные safe emoji
-    for safe in SAFE_EMOJIS:
-        if safe not in reaction_candidates:
-            reaction_candidates.append(safe)
+async def send_reaction(event, emoji: str, label: str):
+    chat_id = event.chat_id
+    memory = reaction_memory_by_chat[chat_id]
+    candidates = build_reaction_candidates(chat_id, label, emoji)
 
     try:
         await human_delay()
 
-        for candidate in reaction_candidates:
+        for candidate in candidates:
             try:
                 await client(functions.messages.SendReactionRequest(
-                    peer=event.chat_id,
+                    peer=chat_id,
                     msg_id=event.id,
                     big=random.random() < 0.45,
                     add_to_recent=True,
                     reaction=[types.ReactionEmoji(emoticon=candidate)]
                 ))
 
-                working_reactions_by_chat[event.chat_id].add(candidate)
-                mark_reaction_sent(event.chat_id)
-                print(f"Reacted {candidate} to message {event.id} in chat {event.chat_id}")
+                memory["allowed"].add(candidate)
+                mark_reaction_sent(chat_id)
+                print(f"Reacted {candidate} to message {event.id} in chat {chat_id}")
                 return
 
             except FloodWaitError:
                 raise
+
             except Exception as inner_error:
-                print(f"Reaction {candidate} failed in chat {event.chat_id}: {inner_error}")
+                memory["blocked"].add(candidate)
+                print(f"Reaction {candidate} failed in chat {chat_id}: {inner_error}")
                 continue
 
-        print(f"Skipping reaction for message {event.id} in chat {event.chat_id}: no valid emoji worked")
+        print(f"Skipping reaction for message {event.id} in chat {chat_id}: no valid emoji worked")
 
     except FloodWaitError as e:
         print(f"FloodWait on reaction: sleeping for {e.seconds} seconds")
@@ -725,6 +753,7 @@ async def send_reaction(event, emoji: str):
 
     except Exception as e:
         print(f"ERROR while reacting: {e}")
+
 
 async def send_text(event, text: str):
     try:
@@ -824,28 +853,15 @@ async def handle_new_message(event):
         last_message_time[chat_id] = time.time()
         recent_messages[chat_id].append(cleaned)
 
-        mentioned = any(name and name.lower()
-                        in cleaned for name in BOT_NAME_HINTS)
+        mentioned = any(name and name.lower() in cleaned for name in BOT_NAME_HINTS)
         context_messages = list(recent_messages[chat_id])
 
         # 1) локальная классификация
-        rule_label, rule_confidence, _ = score_with_rules(
-            text, context_messages)
+        rule_label, rule_confidence, _ = score_with_rules(text, context_messages)
         final_label = rule_label
         final_confidence = rule_confidence
 
-        # 2) AI-классификация только если сообщение сложнее
-        use_ai_now = (
-            USE_AI_CLASSIFICATION
-            and bool(HF_API_TOKEN)
-            and len(text.strip()) >= 12
-            and (
-                rule_confidence < 1.5
-                or len(text) > 24
-                or text.endswith("?")
-            )
-        )
-
+        # 2) HF только для реально сложных сообщений
         use_ai_now = (
             USE_AI_CLASSIFICATION
             and bool(HF_API_TOKEN)
@@ -865,10 +881,19 @@ async def handle_new_message(event):
             )
         )
 
+        if use_ai_now:
+            ai_input = build_ai_input(text, context_messages)
+            ai_result = await classify_with_hf(ai_input)
+            if ai_result:
+                ai_label, ai_score = ai_result
+                if ai_score >= 0.60:
+                    final_label = ai_label
+                    final_confidence = ai_score
+
         # 3) реакция
         if ENABLE_REACTIONS and should_send_reaction(chat_id, text):
             emoji = pick_reaction_by_label(chat_id, final_label)
-            await send_reaction(event, emoji)
+            await send_reaction(event, emoji, final_label)
 
         # 4) текстовый ответ
         if ENABLE_TEXT_REPLIES and should_send_text(chat_id, text, mentioned, final_label):
