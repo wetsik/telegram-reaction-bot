@@ -45,14 +45,18 @@ RECENT_BOT_TEXTS_LIMIT = int(os.environ.get("RECENT_BOT_TEXTS_LIMIT", "12"))
 MAX_CONTEXT = int(os.environ.get("MAX_CONTEXT", "8"))
 
 # инициативные сообщения
-ENABLE_INIT_MESSAGES = os.environ.get("ENABLE_INIT_MESSAGES", "true").lower() == "true"
-INACTIVITY_TRIGGER = int(os.environ.get("INACTIVITY_TRIGGER", "1200"))  # 20 минут
-INACTIVITY_CHECK_INTERVAL = int(os.environ.get("INACTIVITY_CHECK_INTERVAL", "60"))
+ENABLE_INIT_MESSAGES = os.environ.get(
+    "ENABLE_INIT_MESSAGES", "true").lower() == "true"
+INACTIVITY_TRIGGER = int(os.environ.get(
+    "INACTIVITY_TRIGGER", "1200"))  # 20 минут
+INACTIVITY_CHECK_INTERVAL = int(
+    os.environ.get("INACTIVITY_CHECK_INTERVAL", "60"))
 INIT_MESSAGE_CHANCE = float(os.environ.get("INIT_MESSAGE_CHANCE", "0.60"))
 INIT_MIN_GAP = int(os.environ.get("INIT_MIN_GAP", "1800"))  # 30 минут
 
 # AI-классификация
-USE_AI_CLASSIFICATION = os.environ.get("USE_AI_CLASSIFICATION", "true").lower() == "true"
+USE_AI_CLASSIFICATION = os.environ.get(
+    "USE_AI_CLASSIFICATION", "true").lower() == "true"
 
 # общие
 ENABLE_REACTIONS = True
@@ -73,6 +77,8 @@ client = TelegramClient(
 # =========================================================
 # HEALTH SERVER
 # =========================================================
+
+
 class HealthHandler(BaseHTTPRequestHandler):
     def _send_ok(self, body: bool = False):
         self.send_response(200)
@@ -362,6 +368,8 @@ INIT_END = [
 # =========================================================
 # HELPERS
 # =========================================================
+
+
 def clean_text(text: str) -> str:
     text = text.strip().lower()
     text = re.sub(r"\s+", " ", text)
@@ -519,49 +527,58 @@ async def classify_with_hf(text: str):
     }
 
     try:
-        timeout = aiohttp.ClientTimeout(total=12)
+        timeout = aiohttp.ClientTimeout(total=20, connect=10, sock_read=20)
+
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(url, headers=headers, json=payload) as resp:
                 raw_text = await resp.text()
 
                 if resp.status != 200:
-                    print("HF API error:", resp.status, raw_text[:500])
+                    print(
+                        f"HF API error: status={resp.status}, body={raw_text[:500]}")
                     return None
 
                 try:
                     data = json.loads(raw_text)
-                except Exception:
-                    print("HF JSON parse error:", raw_text[:500])
+                except Exception as parse_error:
+                    print(
+                        f"HF JSON parse error: {repr(parse_error)} | body={raw_text[:500]}")
                     return None
 
-        # Формат 1: словарь {"labels": [...], "scores": [...]}
+        # Формат 1: {"labels": [...], "scores": [...]}
         if isinstance(data, dict):
             labels = data.get("labels", [])
             scores = data.get("scores", [])
-
             if labels and scores:
                 return labels[0], float(scores[0])
 
-        # Формат 2: список [{"label": "...", "score": ...}, ...]
-        if isinstance(data, list):
-            if data and isinstance(data[0], dict):
-                if "label" in data[0] and "score" in data[0]:
-                    best_item = max(data, key=lambda x: float(x.get("score", 0)))
-                    return best_item["label"], float(best_item["score"])
+        # Формат 2: [{"label": "...", "score": ...}, ...]
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            if "label" in data[0] and "score" in data[0]:
+                best_item = max(data, key=lambda x: float(x.get("score", 0)))
+                return best_item["label"], float(best_item["score"])
 
-                # запасной формат: [{"labels":[...], "scores":[...]}]
-                first = data[0]
-                labels = first.get("labels", [])
-                scores = first.get("scores", [])
+            # запасной случай
+            first = data[0]
+            labels = first.get("labels", [])
+            scores = first.get("scores", [])
+            if labels and scores:
+                return labels[0], float(scores[0])
 
-                if labels and scores:
-                    return labels[0], float(scores[0])
+        print(
+            f"HF unexpected response format: type={type(data).__name__}, data={str(data)[:500]}")
+        return None
 
-        print("HF unexpected response format:", str(data)[:500])
+    except asyncio.TimeoutError as e:
+        print(f"HF classify timeout: {repr(e)}")
+        return None
+
+    except aiohttp.ClientError as e:
+        print(f"HF classify client error: {repr(e)}")
         return None
 
     except Exception as e:
-        print("HF classify error:", e)
+        print(f"HF classify error: {type(e).__name__}: {repr(e)}")
         return None
 
 
@@ -692,16 +709,19 @@ async def send_reaction(event, emoji: str):
 
                 working_reactions_by_chat[event.chat_id].add(candidate)
                 mark_reaction_sent(event.chat_id)
-                print(f"Reacted {candidate} to message {event.id} in chat {event.chat_id}")
+                print(
+                    f"Reacted {candidate} to message {event.id} in chat {event.chat_id}")
                 return
 
             except FloodWaitError:
                 raise
             except Exception as inner_error:
-                print(f"Reaction {candidate} failed in chat {event.chat_id}: {inner_error}")
+                print(
+                    f"Reaction {candidate} failed in chat {event.chat_id}: {inner_error}")
                 continue
 
-        print(f"Skipping reaction for message {event.id} in chat {event.chat_id}: no valid emoji worked")
+        print(
+            f"Skipping reaction for message {event.id} in chat {event.chat_id}: no valid emoji worked")
 
     except FloodWaitError as e:
         print(f"FloodWait on reaction: sleeping for {e.seconds} seconds")
@@ -809,11 +829,13 @@ async def handle_new_message(event):
         last_message_time[chat_id] = time.time()
         recent_messages[chat_id].append(cleaned)
 
-        mentioned = any(name and name.lower() in cleaned for name in BOT_NAME_HINTS)
+        mentioned = any(name and name.lower()
+                        in cleaned for name in BOT_NAME_HINTS)
         context_messages = list(recent_messages[chat_id])
 
         # 1) локальная классификация
-        rule_label, rule_confidence, _ = score_with_rules(text, context_messages)
+        rule_label, rule_confidence, _ = score_with_rules(
+            text, context_messages)
         final_label = rule_label
         final_confidence = rule_confidence
 
@@ -821,21 +843,32 @@ async def handle_new_message(event):
         use_ai_now = (
             USE_AI_CLASSIFICATION
             and bool(HF_API_TOKEN)
+            and len(text.strip()) >= 12
             and (
                 rule_confidence < 1.5
-                or len(text) > 18
+                or len(text) > 24
                 or text.endswith("?")
             )
         )
 
-        if use_ai_now:
-            ai_input = build_ai_input(text, context_messages)
-            ai_result = await classify_with_hf(ai_input)
-            if ai_result:
-                ai_label, ai_score = ai_result
-                if ai_score >= 0.45:
-                    final_label = ai_label
-                    final_confidence = ai_score
+        use_ai_now = (
+            USE_AI_CLASSIFICATION
+            and bool(HF_API_TOKEN)
+            and len(text.strip()) >= 20
+            and len(text.split()) >= 4
+            and (
+                rule_confidence < 1.2
+                or len(text) > 35
+                or (
+                    "но" in cleaned
+                    or "хотя" in cleaned
+                    or "зато" in cleaned
+                    or "если" in cleaned
+                    or "потому" in cleaned
+                    or "либо" in cleaned
+                )
+            )
+        )
 
         # 3) реакция
         if ENABLE_REACTIONS and should_send_reaction(chat_id, text):
