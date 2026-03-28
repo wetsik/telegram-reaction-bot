@@ -32,7 +32,7 @@ REACTION_CHANCE = float(os.environ.get("REACTION_CHANCE", "0.98"))
 TEXT_REPLY_CHANCE = float(os.environ.get("TEXT_REPLY_CHANCE", "0.30"))
 MENTION_REPLY_CHANCE = float(os.environ.get("MENTION_REPLY_CHANCE", "0.95"))
 
-# лимиты на всякий случай
+# лимиты
 TEXT_COOLDOWN = int(os.environ.get("TEXT_COOLDOWN", "20"))
 REACTION_COOLDOWN = int(os.environ.get("REACTION_COOLDOWN", "0"))
 
@@ -46,12 +46,12 @@ MAX_CONTEXT = int(os.environ.get("MAX_CONTEXT", "8"))
 
 # инициативные сообщения
 ENABLE_INIT_MESSAGES = os.environ.get("ENABLE_INIT_MESSAGES", "true").lower() == "true"
-INACTIVITY_TRIGGER = int(os.environ.get("INACTIVITY_TRIGGER", "1200"))  # 20 мин
+INACTIVITY_TRIGGER = int(os.environ.get("INACTIVITY_TRIGGER", "1200"))  # 20 минут
 INACTIVITY_CHECK_INTERVAL = int(os.environ.get("INACTIVITY_CHECK_INTERVAL", "60"))
 INIT_MESSAGE_CHANCE = float(os.environ.get("INIT_MESSAGE_CHANCE", "0.60"))
-INIT_MIN_GAP = int(os.environ.get("INIT_MIN_GAP", "1800"))  # между инициативными сообщениями 30 мин
+INIT_MIN_GAP = int(os.environ.get("INIT_MIN_GAP", "1800"))  # 30 минут
 
-# ИИ-классификация
+# AI-классификация
 USE_AI_CLASSIFICATION = os.environ.get("USE_AI_CLASSIFICATION", "true").lower() == "true"
 
 # общие
@@ -74,7 +74,7 @@ client = TelegramClient(
 # HEALTH SERVER
 # =========================================================
 class HealthHandler(BaseHTTPRequestHandler):
-    def _send_ok(self, body=False):
+    def _send_ok(self, body: bool = False):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
@@ -100,10 +100,12 @@ class HealthHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         return
 
+
 def run_health_server():
     server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
     print(f"Health server started on port {PORT}")
     server.serve_forever()
+
 
 # =========================================================
 # MEMORY
@@ -195,17 +197,24 @@ PATTERNS = {
     ]
 }
 
+SAFE_EMOJIS = [
+    "😂", "🤣", "💀", "🔥", "💯", "⚡",
+    "😎", "👀", "😳", "😱", "🤔",
+    "😢", "💔", "❤️", "😍",
+    "😡", "👍", "🗿", "🙂"
+]
+
 REACTIONS = {
     "funny": ["😂", "🤣", "💀"],
     "shock": ["😱", "👀", "💀", "🔥"],
     "hype": ["🔥", "💯", "⚡", "🗿"],
-    "sad": ["😢", "💔", "🥀"],
+    "sad": ["😢", "💔"],
     "love": ["❤️", "😍", "🔥"],
-    "anger": ["😡", "🤡", "💀"],
+    "anger": ["😡", "💀"],
     "question": ["🤔", "👀", "🗿"],
     "agreement": ["💯", "🗿", "🔥"],
-    "disagreement": ["🤨", "😏", "🗿"],
-    "greeting": ["👋", "😎", "❤️"],
+    "disagreement": ["🤔", "🗿", "👀"],
+    "greeting": ["😎", "❤️", "🙂"],
     "neutral": ["👀", "🗿", "🙂", "🔥"]
 }
 
@@ -289,16 +298,14 @@ TEXT_REPLIES = {
         "сильный тейк",
         "ладно",
         "ммм",
-        "понятно",
-        "Котенька масюня"
+        "понятно"
     ]
 }
 
 LIGHT_ROAST_REPLIES = [
     "ты серьёзно щас?",
     "брат ты чего",
-    "ну ты выдал конечно",
-    "гений наоборот",
+    "ну ты выдал",
     "не ты гонишь",
     "хорош уже",
     "ну это мощный тейк",
@@ -306,7 +313,8 @@ LIGHT_ROAST_REPLIES = [
     "сильное заявление конечно",
     "ну ты и персонаж",
     "логика вышла из чата",
-    "это было смело"
+    "это было смело",
+    "интересная логика конечно"
 ]
 
 INIT_START = [
@@ -348,9 +356,11 @@ def clean_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text)
     return text
 
+
 def contains_blacklisted(text: str) -> bool:
     t = text.lower()
     return any(x in t for x in BLACKLIST_CONTAINS)
+
 
 def refresh_hour_bucket(chat_id: int):
     current_bucket = int(time.time()) // 3600
@@ -359,18 +369,22 @@ def refresh_hour_bucket(chat_id: int):
         chat_state[chat_id]["reactions_in_last_hour"] = 0
         chat_state[chat_id]["hour_bucket"] = current_bucket
 
+
 def mark_text_sent(chat_id: int):
     refresh_hour_bucket(chat_id)
     chat_state[chat_id]["last_text_at"] = int(time.time())
     chat_state[chat_id]["texts_in_last_hour"] += 1
+
 
 def mark_reaction_sent(chat_id: int):
     refresh_hour_bucket(chat_id)
     chat_state[chat_id]["last_reaction_at"] = int(time.time())
     chat_state[chat_id]["reactions_in_last_hour"] += 1
 
+
 def mark_init_sent(chat_id: int):
     chat_state[chat_id]["last_init_at"] = int(time.time())
+
 
 def recent_activity_bonus(chat_id: int) -> float:
     count = len(recent_messages[chat_id])
@@ -380,28 +394,38 @@ def recent_activity_bonus(chat_id: int) -> float:
         return 0.02
     return 0.0
 
+
 def should_roast(text: str, category: str) -> bool:
     t = clean_text(text)
+
     if category not in {"disagreement", "shock", "question", "anger", "neutral"}:
         return False
+
     if any(x in t for x in ["жалко", "грустно", "умер", "болит", "обидно", "плохо"]):
         return False
+
     if len(t) < 4:
         return False
-    return random.random() < 0.22
+
+    return random.random() < 0.18
+
 
 def pick_from_pool_avoiding_repeat(chat_id: int, pool: list[str], storage: dict) -> str:
     last = storage[chat_id]
     choices = pool[:]
+
     if last in choices and len(choices) > 1:
         choices.remove(last)
+
     picked = random.choice(choices)
     storage[chat_id] = picked
     return picked
 
+
 def pick_reaction_by_label(chat_id: int, label: str) -> str:
     pool = REACTIONS.get(label, REACTIONS["neutral"])
     return pick_from_pool_avoiding_repeat(chat_id, pool, last_used_reaction)
+
 
 def pick_reply_by_label(chat_id: int, label: str, text: str) -> str:
     if should_roast(text, label):
@@ -409,6 +433,7 @@ def pick_reply_by_label(chat_id: int, label: str, text: str) -> str:
 
     pool = TEXT_REPLIES.get(label, TEXT_REPLIES["neutral"])
     return pick_from_pool_avoiding_repeat(chat_id, pool, last_used_reply)
+
 
 def score_with_rules(text: str, context_messages):
     t = clean_text(text)
@@ -447,18 +472,21 @@ def score_with_rules(text: str, context_messages):
     confidence = scores[best]
     return best, confidence, scores
 
+
 def build_ai_input(text: str, context_messages):
     recent = list(context_messages)[-3:]
     if not recent:
         return text
+
     context_part = "\n".join(recent)
     return f"Контекст:\n{context_part}\n\nНовое сообщение:\n{text}"
+
 
 async def classify_with_hf(text: str):
     if not USE_AI_CLASSIFICATION or not HF_API_TOKEN:
         return None
 
-    url = "https://api-inference.huggingface.co/models/facebook/bart-large-mnli"
+    url = "https://router.huggingface.co/hf-inference/models/facebook/bart-large-mnli"
     headers = {
         "Authorization": f"Bearer {HF_API_TOKEN}",
         "Content-Type": "application/json"
@@ -479,10 +507,12 @@ async def classify_with_hf(text: str):
                     body = await resp.text()
                     print("HF API error:", resp.status, body[:300])
                     return None
+
                 data = await resp.json()
 
         labels = data.get("labels", [])
         scores = data.get("scores", [])
+
         if not labels or not scores:
             return None
 
@@ -492,11 +522,14 @@ async def classify_with_hf(text: str):
         print("HF classify error:", e)
         return None
 
+
 def is_greeting_for_bot(text: str, mentioned: bool) -> bool:
     if not mentioned:
         return False
+
     t = clean_text(text)
     return any(word in t for word in GREETING_WORDS)
+
 
 def should_send_reaction(chat_id: int, text: str) -> bool:
     now = int(time.time())
@@ -521,6 +554,7 @@ def should_send_reaction(chat_id: int, text: str) -> bool:
 
     return random.random() < min(chance, 1.0)
 
+
 def should_send_text(chat_id: int, text: str, mentioned: bool, label: str) -> bool:
     now = int(time.time())
     hour = time.localtime(now).tm_hour
@@ -543,6 +577,7 @@ def should_send_text(chat_id: int, text: str, mentioned: bool, label: str) -> bo
         return False
 
     chance = MENTION_REPLY_CHANCE if mentioned else TEXT_REPLY_CHANCE
+
     if label in {"funny", "shock", "question", "hype", "agreement", "disagreement"}:
         chance += 0.12
 
@@ -553,7 +588,8 @@ def should_send_text(chat_id: int, text: str, mentioned: bool, label: str) -> bo
 
     return random.random() < min(chance, 1.0)
 
-def generate_init_message():
+
+def generate_init_message() -> str:
     start = random.choice(INIT_START)
     core = random.choice(INIT_CORE)
     end = random.choice(INIT_END)
@@ -571,12 +607,18 @@ def generate_init_message():
 
     return text
 
+
 async def human_delay():
     await asyncio.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
+
 
 async def send_reaction(event, emoji: str):
     try:
         await human_delay()
+
+        if emoji not in SAFE_EMOJIS:
+            emoji = random.choice(SAFE_EMOJIS)
+
         await client(functions.messages.SendReactionRequest(
             peer=event.chat_id,
             msg_id=event.id,
@@ -584,6 +626,7 @@ async def send_reaction(event, emoji: str):
             add_to_recent=True,
             reaction=[types.ReactionEmoji(emoticon=emoji)]
         ))
+
         mark_reaction_sent(event.chat_id)
         print(f"Reacted {emoji} to message {event.id} in chat {event.chat_id}")
 
@@ -593,6 +636,7 @@ async def send_reaction(event, emoji: str):
 
     except Exception as e:
         print(f"ERROR while reacting: {e}")
+
 
 async def send_text(event, text: str):
     try:
@@ -608,6 +652,7 @@ async def send_text(event, text: str):
 
     except Exception as e:
         print(f"ERROR while sending text: {e}")
+
 
 async def send_init_message(chat_id: int):
     try:
@@ -625,10 +670,12 @@ async def send_init_message(chat_id: int):
     except Exception as e:
         print(f"ERROR while sending init message: {e}")
 
+
 async def inactivity_loop():
     while True:
         try:
             await asyncio.sleep(INACTIVITY_CHECK_INTERVAL)
+
             if not ENABLE_INIT_MESSAGES:
                 continue
 
@@ -654,6 +701,7 @@ async def inactivity_loop():
 
         except Exception as e:
             print("Inactivity loop error:", e)
+
 
 # =========================================================
 # MAIN HANDLER
@@ -696,10 +744,10 @@ async def handle_new_message(event):
         final_label = rule_label
         final_confidence = rule_confidence
 
-        # 2) AI-классификация только если сообщение чуть сложнее
+        # 2) AI-классификация только если сообщение сложнее
         use_ai_now = (
             USE_AI_CLASSIFICATION
-            and HF_API_TOKEN
+            and bool(HF_API_TOKEN)
             and (
                 rule_confidence < 1.5
                 or len(text) > 18
@@ -737,10 +785,13 @@ async def handle_new_message(event):
     except Exception as e:
         print(f"HANDLER ERROR: {e}")
 
+
 # =========================================================
 # RUN LOOP
 # =========================================================
 async def run_bot_forever():
+    inactivity_task = None
+
     while True:
         try:
             print("Starting Telegram client...")
@@ -756,8 +807,8 @@ async def run_bot_forever():
 
             BOT_NAME_HINTS[:] = list(dict.fromkeys(BOT_NAME_HINTS))
 
-            if ENABLE_INIT_MESSAGES:
-                asyncio.create_task(inactivity_loop())
+            if ENABLE_INIT_MESSAGES and (inactivity_task is None or inactivity_task.done()):
+                inactivity_task = asyncio.create_task(inactivity_loop())
 
             print("Userbot started and listening for new messages...")
             await client.run_until_disconnected()
@@ -767,6 +818,7 @@ async def run_bot_forever():
 
         print("Restarting in 5 seconds...")
         await asyncio.sleep(5)
+
 
 # =========================================================
 # START
