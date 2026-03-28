@@ -229,7 +229,7 @@ REACTIONS = {
     "anger": ["😡", "🤨", "💀"],
     "question": ["🤔", "👀", "😐", "🗿"],
     "agreement": ["💯", "🔥", "👍", "🗿"],
-    "disagreement": ["🤨", "👎", "😐", "🤔"],
+    "disagreement": ["🤨", "👎", "😐", "🤔", "🤡"],
     "greeting": ["😎", "❤️", "🙂", "👋"],
     "neutral": ["👀", "🗿", "🙂", "🔥", "👍"]
 }
@@ -442,15 +442,21 @@ def pick_from_pool_avoiding_repeat(chat_id: int, pool: list[str], storage: dict)
 
 
 def pick_reaction_by_label(chat_id: int, label: str) -> str:
-    # если уже знаем, какие реакции в чате точно работают, приоритет им
     known_working = list(working_reactions_by_chat[chat_id])
-    pool = REACTIONS.get(label, REACTIONS["neutral"])
 
+    # если для чата уже есть рабочие реакции — используем в первую очередь их
     if known_working:
-        prioritized = [e for e in pool if e in known_working]
-        if prioritized:
-            pool = prioritized + [e for e in pool if e not in prioritized]
+        category_pool = REACTIONS.get(label, REACTIONS["neutral"])
+        prioritized = [e for e in category_pool if e in known_working]
 
+        if prioritized:
+            return pick_from_pool_avoiding_repeat(chat_id, prioritized, last_used_reaction)
+
+        # если в категории нет совпадений — лучше взять любую уже рабочую,
+        # чем снова ловить Invalid reaction provided
+        return pick_from_pool_avoiding_repeat(chat_id, known_working, last_used_reaction)
+
+    pool = REACTIONS.get(label, REACTIONS["neutral"])
     return pick_from_pool_avoiding_repeat(chat_id, pool, last_used_reaction)
 
 
@@ -467,6 +473,7 @@ def score_with_rules(text: str, context_messages):
     joined = " ".join(context_messages[-4:]).lower()
     scores = {label: 0.0 for label in CANDIDATE_LABELS}
 
+    # Основные паттерны по текущему сообщению
     for label, patterns in PATTERNS.items():
         for pattern in patterns:
             if re.search(pattern, t):
@@ -489,15 +496,18 @@ def score_with_rules(text: str, context_messages):
         scores["hype"] += 0.7
         scores["love"] += 0.4
 
-    if any(x in joined for x in ["ахах", "лол", "ору"]):
+    # Контекст учитываем только если текущее сообщение само хоть немного подходит
+    if scores["funny"] > 0 and any(x in joined for x in ["ахах", "лол", "ору"]):
         scores["funny"] += 0.2
 
-    if all(v == 0 for v in scores.values()):
-        scores["neutral"] = 1.0
+    # Если сообщение короткое и почти без явных признаков — считаем neutral
+    best = max(scores.values())
+    if best < 1.0:
+        scores["neutral"] = max(scores["neutral"], 1.0)
 
-    best = max(scores, key=scores.get)
-    confidence = scores[best]
-    return best, confidence, scores
+    best_label = max(scores, key=scores.get)
+    confidence = scores[best_label]
+    return best_label, confidence, scores
 
 
 def build_ai_input(text: str, context_messages):
