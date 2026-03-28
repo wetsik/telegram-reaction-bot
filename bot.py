@@ -428,8 +428,6 @@ async def handle_new_message(event):
         if event.out:
             return
 
-        if not is_group_event(event):
-            return
 
         text = event.raw_text or ""
         if not text.strip():
