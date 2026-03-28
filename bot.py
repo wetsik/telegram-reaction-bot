@@ -87,13 +87,21 @@ async def handle_new_message(event):
         print(f"ERROR while reacting: {e}")
 
 
-async def main():
-    print("Starting Telegram client...")
-    await client.start()
-    print("Userbot started and listening for new messages...")
-    await client.run_until_disconnected()
+async def run_bot_forever():
+    while True:
+        try:
+            print("Starting Telegram client...")
+            await client.start()
+            print("Userbot started and listening for new messages...")
+            await client.run_until_disconnected()
+
+        except Exception as e:
+            print(f"MAIN ERROR: {e}")
+
+        print("Restarting in 5 seconds...")
+        await asyncio.sleep(5)
 
 
 if __name__ == "__main__":
     threading.Thread(target=run_health_server, daemon=True).start()
-    asyncio.run(main())
+    asyncio.run(run_bot_forever())
