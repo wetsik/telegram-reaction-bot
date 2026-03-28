@@ -34,6 +34,29 @@ client = TelegramClient(
 
 
 class HealthHandler(BaseHTTPRequestHandler):
+    def _send_ok(self, body=False):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain; charset=utf-8")
+        self.end_headers()
+        if body:
+            self.wfile.write(b"ok")
+
+    def do_GET(self):
+        if self.path in ("/", "/health"):
+            self._send_ok(body=True)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_HEAD(self):
+        if self.path in ("/", "/health"):
+            self._send_ok(body=False)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        return
     def do_GET(self):
         if self.path in ("/", "/health"):
             self.send_response(200)
