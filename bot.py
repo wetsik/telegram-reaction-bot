@@ -126,6 +126,9 @@ chat_state = defaultdict(lambda: {
 last_used_reaction = defaultdict(lambda: None)
 last_used_reply = defaultdict(lambda: None)
 
+# успешные реакции по чатам — бот будет запоминать, что реально прошло
+working_reactions_by_chat = defaultdict(set)
+
 # =========================================================
 # DATA
 # =========================================================
@@ -197,25 +200,32 @@ PATTERNS = {
     ]
 }
 
+# более широкий список реакций, похожий на доступные в Telegram.
+# бот все равно будет проверять их на практике и запоминать рабочие для чата.
 SAFE_EMOJIS = [
-    "😂", "🤣", "💀", "🔥", "💯", "⚡",
-    "😎", "👀", "😳", "😱", "🤔",
-    "😢", "💔", "❤️", "😍",
-    "😡", "👍", "🗿", "🙂"
+    "👍", "👎", "❤️", "🔥", "🥰",
+    "👏", "😁", "🤔", "🤯", "😱",
+    "😢", "😡", "🤩", "🤮", "💩",
+    "🙏", "👌", "🤡", "🎉", "🥳",
+    "💯", "⚡", "🏆", "💔", "🤨",
+    "😐", "💋", "😈", "😴", "😭",
+    "🤓", "👻", "👀", "🙈", "😇",
+    "😨", "🤝", "🤗", "🗿", "🆒",
+    "😂", "🤣", "💀", "😎", "🙂"
 ]
 
 REACTIONS = {
-    "funny": ["😂", "🤣", "💀"],
-    "shock": ["😱", "👀", "💀", "🔥"],
-    "hype": ["🔥", "💯", "⚡", "🗿"],
-    "sad": ["😢", "💔"],
-    "love": ["❤️", "😍", "🔥"],
-    "anger": ["😡", "💀"],
-    "question": ["🤔", "👀", "🗿"],
-    "agreement": ["💯", "🗿", "🔥"],
-    "disagreement": ["🤔", "🗿", "👀"],
-    "greeting": ["😎", "❤️", "🙂"],
-    "neutral": ["👀", "🗿", "🙂", "🔥"]
+    "funny": ["😂", "🤣", "💀", "😁"],
+    "shock": ["😱", "👀", "🤯", "🔥"],
+    "hype": ["🔥", "💯", "⚡", "🏆", "🗿"],
+    "sad": ["😢", "💔", "😭"],
+    "love": ["❤️", "🥰", "😍", "💋"],
+    "anger": ["😡", "🤨", "💀"],
+    "question": ["🤔", "👀", "😐", "🗿"],
+    "agreement": ["💯", "🔥", "👍", "🗿"],
+    "disagreement": ["🤨", "👎", "😐", "🤔"],
+    "greeting": ["😎", "❤️", "🙂", "👋"],
+    "neutral": ["👀", "🗿", "🙂", "🔥", "👍"]
 }
 
 TEXT_REPLIES = {
@@ -298,7 +308,8 @@ TEXT_REPLIES = {
         "сильный тейк",
         "ладно",
         "ммм",
-        "понятно"
+        "понятно",
+        "Котенька масюня"
     ]
 }
 
@@ -345,7 +356,7 @@ INIT_END = [
     "ау",
     "непонятно",
     "мне одному скучно",
-    "кто нибудь проснулся",
+    "кто нибудь проснулся?",
 ]
 
 # =========================================================
@@ -423,7 +434,15 @@ def pick_from_pool_avoiding_repeat(chat_id: int, pool: list[str], storage: dict)
 
 
 def pick_reaction_by_label(chat_id: int, label: str) -> str:
+    # если уже знаем, какие реакции в чате точно работают, приоритет им
+    known_working = list(working_reactions_by_chat[chat_id])
     pool = REACTIONS.get(label, REACTIONS["neutral"])
+
+    if known_working:
+        prioritized = [e for e in pool if e in known_working]
+        if prioritized:
+            pool = prioritized + [e for e in pool if e not in prioritized]
+
     return pick_from_pool_avoiding_repeat(chat_id, pool, last_used_reaction)
 
 
@@ -515,7 +534,7 @@ async def classify_with_hf(text: str):
                     print("HF JSON parse error:", raw_text[:500])
                     return None
 
-        # Вариант 1: нормальный zero-shot ответ словарём
+        # Формат 1: словарь {"labels": [...], "scores": [...]}
         if isinstance(data, dict):
             labels = data.get("labels", [])
             scores = data.get("scores", [])
@@ -523,12 +542,15 @@ async def classify_with_hf(text: str):
             if labels and scores:
                 return labels[0], float(scores[0])
 
-        # Вариант 2: если почему-то пришёл список
+        # Формат 2: список [{"label": "...", "score": ...}, ...]
         if isinstance(data, list):
-            # иногда HF может вернуть список объектов
             if data and isinstance(data[0], dict):
-                first = data[0]
+                if "label" in data[0] and "score" in data[0]:
+                    best_item = max(data, key=lambda x: float(x.get("score", 0)))
+                    return best_item["label"], float(best_item["score"])
 
+                # запасной формат: [{"labels":[...], "scores":[...]}]
+                first = data[0]
                 labels = first.get("labels", [])
                 scores = first.get("scores", [])
 
@@ -541,6 +563,7 @@ async def classify_with_hf(text: str):
     except Exception as e:
         print("HF classify error:", e)
         return None
+
 
 def is_greeting_for_bot(text: str, mentioned: bool) -> bool:
     if not mentioned:
@@ -632,22 +655,53 @@ async def human_delay():
 
 
 async def send_reaction(event, emoji: str):
+    reaction_candidates = []
+
+    # сначала пробуем эмодзи, который выбрала логика
+    if emoji:
+        reaction_candidates.append(emoji)
+
+    # потом уже те, которые в этом чате точно срабатывали раньше
+    known_working = list(working_reactions_by_chat[event.chat_id])
+    for known in known_working:
+        if known not in reaction_candidates:
+            reaction_candidates.append(known)
+
+    # потом безопасные фолбэки
+    for fallback in ["👍", "🔥", "❤️", "😂", "👀", "🙂", "🤔", "💯", "😢", "😎"]:
+        if fallback not in reaction_candidates:
+            reaction_candidates.append(fallback)
+
+    # и в конце остальной общий whitelist
+    for safe in SAFE_EMOJIS:
+        if safe not in reaction_candidates:
+            reaction_candidates.append(safe)
+
     try:
         await human_delay()
 
-        if emoji not in SAFE_EMOJIS:
-            emoji = random.choice(SAFE_EMOJIS)
+        for candidate in reaction_candidates:
+            try:
+                await client(functions.messages.SendReactionRequest(
+                    peer=event.chat_id,
+                    msg_id=event.id,
+                    big=random.random() < 0.45,
+                    add_to_recent=True,
+                    reaction=[types.ReactionEmoji(emoticon=candidate)]
+                ))
 
-        await client(functions.messages.SendReactionRequest(
-            peer=event.chat_id,
-            msg_id=event.id,
-            big=random.random() < 0.45,
-            add_to_recent=True,
-            reaction=[types.ReactionEmoji(emoticon=emoji)]
-        ))
+                working_reactions_by_chat[event.chat_id].add(candidate)
+                mark_reaction_sent(event.chat_id)
+                print(f"Reacted {candidate} to message {event.id} in chat {event.chat_id}")
+                return
 
-        mark_reaction_sent(event.chat_id)
-        print(f"Reacted {emoji} to message {event.id} in chat {event.chat_id}")
+            except FloodWaitError:
+                raise
+            except Exception as inner_error:
+                print(f"Reaction {candidate} failed in chat {event.chat_id}: {inner_error}")
+                continue
+
+        print(f"Skipping reaction for message {event.id} in chat {event.chat_id}: no valid emoji worked")
 
     except FloodWaitError as e:
         print(f"FloodWait on reaction: sleeping for {e.seconds} seconds")
