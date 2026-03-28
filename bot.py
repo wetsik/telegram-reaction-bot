@@ -12,11 +12,10 @@ API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING = os.environ["SESSION_STRING"]
 
-client = TelegramClient(
-    StringSession(SESSION_STRING),
-    API_ID,
-    API_HASH
-)
+MIN_DELAY = float(os.environ.get("MIN_DELAY", "0.3"))
+MAX_DELAY = float(os.environ.get("MAX_DELAY", "1.2"))
+REACTION_CHANCE = float(os.environ.get("REACTION_CHANCE", "1.0"))
+PORT = int(os.environ.get("PORT", "10000"))
 
 EMOJIS = [
     "😂", "🤣", "💀", "😭", "😹", "😆",
@@ -27,26 +26,33 @@ EMOJIS = [
     "😡", "🤦", "👍", "🙂", "🗿"
 ]
 
-MIN_DELAY = float(os.environ.get("MIN_DELAY", "0.3"))
-MAX_DELAY = float(os.environ.get("MAX_DELAY", "1.2"))
-REACTION_CHANCE = float(os.environ.get("REACTION_CHANCE", "1.0"))
+client = TelegramClient(
+    StringSession(SESSION_STRING),
+    API_ID,
+    API_HASH
+)
 
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(b"ok")
+        if self.path in ("/", "/health"):
+            self.send_response(200)
+            self.send_header("Content-type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"ok")
+        else:
+            self.send_response(404)
+            self.send_header("Content-type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"not found")
 
     def log_message(self, format, *args):
         return
 
 
 def run_health_server():
-    port = int(os.environ.get("PORT", "10000"))
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    print(f"Health server started on port {port}")
+    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+    print(f"Health server started on port {PORT}")
     server.serve_forever()
 
 
@@ -71,20 +77,20 @@ async def handle_new_message(event):
             reaction=[types.ReactionEmoji(emoticon=emoji)]
         ))
 
-        print(f"reacted {emoji} to message {event.id}")
+        print(f"Reacted {emoji} to message {event.id} in chat {event.chat_id}")
 
     except FloodWaitError as e:
-        print(f"FloodWait: {e.seconds}s")
+        print(f"FloodWait: sleeping for {e.seconds} seconds")
         await asyncio.sleep(e.seconds)
 
     except Exception as e:
-        print("ERROR:", e)
+        print(f"ERROR while reacting: {e}")
 
 
 async def main():
     print("Starting Telegram client...")
     await client.start()
-    print("Userbot started...")
+    print("Userbot started and listening for new messages...")
     await client.run_until_disconnected()
 
 
