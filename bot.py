@@ -453,7 +453,6 @@ def score_with_rules(text: str, context_messages):
     joined = " ".join(context_messages[-4:]).lower()
     scores = {label: 0.0 for label in CANDIDATE_LABELS}
 
-    # Основные паттерны по текущему сообщению
     for label, patterns in PATTERNS.items():
         for pattern in patterns:
             if re.search(pattern, t):
@@ -476,11 +475,9 @@ def score_with_rules(text: str, context_messages):
         scores["hype"] += 0.7
         scores["love"] += 0.4
 
-    # Контекст funny учитываем только если текущее сообщение уже хоть немного funny
     if scores["funny"] > 0 and any(x in joined for x in ["ахах", "лол", "ору"]):
         scores["funny"] += 0.2
 
-    # Стабилизация neutral для коротких / обычных фраз
     best = max(scores.values())
     if best < 1.0:
         scores["neutral"] = max(scores["neutral"], 1.0)
@@ -533,14 +530,12 @@ async def classify_with_hf(text: str):
                     print(f"HF JSON parse error: {repr(parse_error)} | body={raw_text[:500]}")
                     return None
 
-        # Формат 1: {"labels": [...], "scores": [...]}
         if isinstance(data, dict):
             labels = data.get("labels", [])
             scores = data.get("scores", [])
             if labels and scores:
                 return labels[0], float(scores[0])
 
-        # Формат 2: [{"label": "...", "score": ...}, ...]
         if isinstance(data, list) and data and isinstance(data[0], dict):
             if "label" in data[0] and "score" in data[0]:
                 best_item = max(data, key=lambda x: float(x.get("score", 0)))
@@ -676,20 +671,22 @@ def build_reaction_candidates(chat_id: int, label: str, preferred_emoji: str | N
     if preferred_emoji and preferred_emoji not in blocked:
         candidates.append(preferred_emoji)
 
-    # Сначала пробуем реакции категории
+    # сначала пробуем новые реакции категории
     for emoji in unknown_category:
         if emoji not in candidates:
             candidates.append(emoji)
 
+    # потом уже рабочие реакции категории
     for emoji in allowed_category:
         if emoji not in candidates:
             candidates.append(emoji)
 
-    # Потом fallback
+    # потом новые safe fallback
     for emoji in unknown_fallback:
         if emoji not in candidates:
             candidates.append(emoji)
 
+    # и только потом рабочие fallback
     for emoji in allowed_fallback:
         if emoji not in candidates:
             candidates.append(emoji)
@@ -698,6 +695,7 @@ def build_reaction_candidates(chat_id: int, label: str, preferred_emoji: str | N
         candidates = ["👍", "🔥", "👀"]
 
     return candidates
+
 
 def pick_reaction_by_label(chat_id: int, label: str) -> str:
     category_pool = REACTIONS.get(label, REACTIONS["neutral"])
@@ -708,22 +706,20 @@ def pick_reaction_by_label(chat_id: int, label: str) -> str:
     allowed_category = [e for e in category_pool if e in allowed and e not in blocked]
     unknown_category = [e for e in category_pool if e not in allowed and e not in blocked]
 
-    # 30% шанс попробовать новую реакцию из категории,
+    # 30% шанс исследовать новую реакцию категории,
     # даже если уже есть рабочая
     if unknown_category and random.random() < 0.30:
         return pick_from_pool_avoiding_repeat(chat_id, unknown_category, last_used_reaction)
 
-    # иначе используем уже рабочую по категории
     if allowed_category:
         return pick_from_pool_avoiding_repeat(chat_id, allowed_category, last_used_reaction)
 
-    # если рабочих по категории нет — пробуем новую
     if unknown_category:
         return pick_from_pool_avoiding_repeat(chat_id, unknown_category, last_used_reaction)
 
-    # если всё заблокировано — fallback
     fallback_pool = [e for e in SAFE_EMOJIS if e not in blocked]
     return pick_from_pool_avoiding_repeat(chat_id, fallback_pool, last_used_reaction)
+
 
 async def human_delay():
     await asyncio.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
