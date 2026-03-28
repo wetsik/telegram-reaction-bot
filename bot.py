@@ -503,25 +503,44 @@ async def classify_with_hf(text: str):
         timeout = aiohttp.ClientTimeout(total=12)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(url, headers=headers, json=payload) as resp:
+                raw_text = await resp.text()
+
                 if resp.status != 200:
-                    body = await resp.text()
-                    print("HF API error:", resp.status, body[:300])
+                    print("HF API error:", resp.status, raw_text[:500])
                     return None
 
-                data = await resp.json()
+                try:
+                    data = json.loads(raw_text)
+                except Exception:
+                    print("HF JSON parse error:", raw_text[:500])
+                    return None
 
-        labels = data.get("labels", [])
-        scores = data.get("scores", [])
+        # Вариант 1: нормальный zero-shot ответ словарём
+        if isinstance(data, dict):
+            labels = data.get("labels", [])
+            scores = data.get("scores", [])
 
-        if not labels or not scores:
-            return None
+            if labels and scores:
+                return labels[0], float(scores[0])
 
-        return labels[0], float(scores[0])
+        # Вариант 2: если почему-то пришёл список
+        if isinstance(data, list):
+            # иногда HF может вернуть список объектов
+            if data and isinstance(data[0], dict):
+                first = data[0]
+
+                labels = first.get("labels", [])
+                scores = first.get("scores", [])
+
+                if labels and scores:
+                    return labels[0], float(scores[0])
+
+        print("HF unexpected response format:", str(data)[:500])
+        return None
 
     except Exception as e:
         print("HF classify error:", e)
         return None
-
 
 def is_greeting_for_bot(text: str, mentioned: bool) -> bool:
     if not mentioned:
