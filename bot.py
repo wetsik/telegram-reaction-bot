@@ -660,16 +660,10 @@ def build_reaction_candidates(chat_id: int, label: str, preferred_emoji: str | N
 
     category_pool = REACTIONS.get(label, REACTIONS["neutral"])
 
-    # 1. Рабочие реакции из нужной категории
     allowed_category = [e for e in category_pool if e in allowed and e not in blocked]
-
-    # 2. Неизвестные реакции из нужной категории
     unknown_category = [e for e in category_pool if e not in allowed and e not in blocked]
 
-    # 3. Рабочие safe reactions
     allowed_fallback = [e for e in SAFE_EMOJIS if e in allowed and e not in blocked and e not in allowed_category]
-
-    # 4. Неизвестные safe reactions
     unknown_fallback = [e for e in SAFE_EMOJIS if e not in allowed and e not in blocked and e not in unknown_category]
 
     random.shuffle(allowed_category)
@@ -682,17 +676,28 @@ def build_reaction_candidates(chat_id: int, label: str, preferred_emoji: str | N
     if preferred_emoji and preferred_emoji not in blocked:
         candidates.append(preferred_emoji)
 
-    for bucket in [allowed_category, unknown_category, allowed_fallback, unknown_fallback]:
-        for emoji in bucket:
-            if emoji not in candidates:
-                candidates.append(emoji)
+    # Сначала пробуем реакции категории
+    for emoji in unknown_category:
+        if emoji not in candidates:
+            candidates.append(emoji)
 
-    # На всякий случай, если всё пусто
+    for emoji in allowed_category:
+        if emoji not in candidates:
+            candidates.append(emoji)
+
+    # Потом fallback
+    for emoji in unknown_fallback:
+        if emoji not in candidates:
+            candidates.append(emoji)
+
+    for emoji in allowed_fallback:
+        if emoji not in candidates:
+            candidates.append(emoji)
+
     if not candidates:
         candidates = ["👍", "🔥", "👀"]
 
     return candidates
-
 
 def pick_reaction_by_label(chat_id: int, label: str) -> str:
     category_pool = REACTIONS.get(label, REACTIONS["neutral"])
@@ -700,15 +705,25 @@ def pick_reaction_by_label(chat_id: int, label: str) -> str:
     allowed = memory["allowed"]
     blocked = memory["blocked"]
 
-    # если среди реакций категории уже есть рабочие — берем из них
     allowed_category = [e for e in category_pool if e in allowed and e not in blocked]
+    unknown_category = [e for e in category_pool if e not in allowed and e not in blocked]
+
+    # 30% шанс попробовать новую реакцию из категории,
+    # даже если уже есть рабочая
+    if unknown_category and random.random() < 0.30:
+        return pick_from_pool_avoiding_repeat(chat_id, unknown_category, last_used_reaction)
+
+    # иначе используем уже рабочую по категории
     if allowed_category:
         return pick_from_pool_avoiding_repeat(chat_id, allowed_category, last_used_reaction)
 
-    # иначе пробуем любую реакцию именно из категории, которая ещё не заблокирована
-    usable_category = [e for e in category_pool if e not in blocked]
-    return pick_from_pool_avoiding_repeat(chat_id, usable_category, last_used_reaction)
+    # если рабочих по категории нет — пробуем новую
+    if unknown_category:
+        return pick_from_pool_avoiding_repeat(chat_id, unknown_category, last_used_reaction)
 
+    # если всё заблокировано — fallback
+    fallback_pool = [e for e in SAFE_EMOJIS if e not in blocked]
+    return pick_from_pool_avoiding_repeat(chat_id, fallback_pool, last_used_reaction)
 
 async def human_delay():
     await asyncio.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
