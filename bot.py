@@ -23,6 +23,9 @@ SESSION_STRING = os.environ["SESSION_STRING"]
 PORT = int(os.environ.get("PORT", "10000"))
 HF_API_TOKEN = os.environ.get("HF_API_TOKEN", "").strip()
 
+# твой сдвиг по времени (Узбекистан = +5)
+TZ_OFFSET = int(os.environ.get("TZ_OFFSET", "5"))
+
 # задержка перед реакцией / ответом
 MIN_DELAY = float(os.environ.get("MIN_DELAY", "0.25"))
 MAX_DELAY = float(os.environ.get("MAX_DELAY", "0.9"))
@@ -46,10 +49,15 @@ MAX_CONTEXT = int(os.environ.get("MAX_CONTEXT", "8"))
 
 # инициативные сообщения
 ENABLE_INIT_MESSAGES = os.environ.get("ENABLE_INIT_MESSAGES", "true").lower() == "true"
+
+# для теста можно поставить 30 / 5 / 1.0 / 60
 INACTIVITY_TRIGGER = int(os.environ.get("INACTIVITY_TRIGGER", "1200"))  # 20 минут
 INACTIVITY_CHECK_INTERVAL = int(os.environ.get("INACTIVITY_CHECK_INTERVAL", "60"))
-INIT_MESSAGE_CHANCE = float(os.environ.get("INIT_MESSAGE_CHANCE", "0.60"))
-INIT_MIN_GAP = int(os.environ.get("INIT_MIN_GAP", "1800"))  # 30 минут
+INIT_MESSAGE_CHANCE = float(os.environ.get("INIT_MESSAGE_CHANCE", "0.35"))
+INIT_MIN_GAP = int(os.environ.get("INIT_MIN_GAP", "3600"))  # 1 час
+
+# писать инициативные сообщения только в личку
+TEST_INIT_PRIVATE_ONLY = os.environ.get("TEST_INIT_PRIVATE_ONLY", "true").lower() == "true"
 
 # AI-классификация
 USE_AI_CLASSIFICATION = os.environ.get("USE_AI_CLASSIFICATION", "true").lower() == "true"
@@ -105,33 +113,37 @@ def run_health_server():
     print(f"Health server started on port {PORT}")
     server.serve_forever()
 
-# =========================================================
-# ACTIVITY
-# =========================================================
-def get_activity_multiplier():
-    hour = time.localtime().tm_hour
 
-    # если сервер не твой часовой пояс (например UTC)
-    # для Узбекистана добавь +5:
-    hour = (hour + 5) % 24
+# =========================================================
+# TIME / ACTIVITY
+# =========================================================
+def get_local_hour() -> int:
+    return (time.localtime().tm_hour + TZ_OFFSET) % 24
 
-    # ночь (почти не пишет)
+
+def get_activity_multiplier(hour: int | None = None) -> float:
+    if hour is None:
+        hour = get_local_hour()
+
+    # глубокая ночь
     if 1 <= hour <= 6:
         return 0.05
 
-    # утро (слабый актив)
-    elif 7 <= hour <= 11:
-        return 0.4
+    # утро
+    if 7 <= hour <= 11:
+        return 0.45
 
-    # день (норм)
-    elif 12 <= hour <= 18:
-        return 0.7
+    # день
+    if 12 <= hour <= 18:
+        return 0.75
 
-    # вечер (пик)
-    elif 19 <= hour <= 23:
+    # вечер
+    if 19 <= hour <= 23:
         return 1.0
 
-    return 0.3
+    # 00:00
+    return 0.25
+
 
 # =========================================================
 # MEMORY
@@ -152,9 +164,6 @@ chat_state = defaultdict(lambda: {
 last_used_reaction = defaultdict(lambda: None)
 last_used_reply = defaultdict(lambda: None)
 
-# Память реакций по чату:
-# allowed - точно работают
-# blocked - точно не работают
 reaction_memory_by_chat = defaultdict(lambda: {
     "allowed": set(),
     "blocked": set(),
@@ -339,7 +348,7 @@ TEXT_REPLIES = {
         "ладно",
         "мда...",
         "понятно",
-        "Котенька масюня"
+        "котенька масюня"
     ]
 }
 
@@ -598,7 +607,7 @@ def is_greeting_for_bot(text: str, mentioned: bool) -> bool:
 
 def should_send_reaction(chat_id: int, text: str) -> bool:
     now = int(time.time())
-    hour = time.localtime(now).tm_hour
+    hour = get_local_hour()
     refresh_hour_bucket(chat_id)
 
     state = chat_state[chat_id]
@@ -614,15 +623,15 @@ def should_send_reaction(chat_id: int, text: str) -> bool:
 
     chance = REACTION_CHANCE + recent_activity_bonus(chat_id)
 
-    if hour in QUIET_HOURS:
-        chance *= 0.7
+    # живой режим: ночью чуть менее активен
+    chance *= (0.65 + 0.35 * get_activity_multiplier(hour))
 
     return random.random() < min(chance, 1.0)
 
 
 def should_send_text(chat_id: int, text: str, mentioned: bool, label: str) -> bool:
     now = int(time.time())
-    hour = time.localtime(now).tm_hour
+    hour = get_local_hour()
     refresh_hour_bucket(chat_id)
 
     state = chat_state[chat_id]
@@ -648,8 +657,8 @@ def should_send_text(chat_id: int, text: str, mentioned: bool, label: str) -> bo
 
     chance += recent_activity_bonus(chat_id)
 
-    if hour in QUIET_HOURS:
-        chance *= 0.6
+    # живой режим: текст ночью заметно реже
+    chance *= get_activity_multiplier(hour)
 
     return random.random() < min(chance, 1.0)
 
@@ -696,22 +705,18 @@ def build_reaction_candidates(chat_id: int, label: str, preferred_emoji: str | N
     if preferred_emoji and preferred_emoji not in blocked:
         candidates.append(preferred_emoji)
 
-    # сначала пробуем новые реакции категории
     for emoji in unknown_category:
         if emoji not in candidates:
             candidates.append(emoji)
 
-    # потом уже рабочие реакции категории
     for emoji in allowed_category:
         if emoji not in candidates:
             candidates.append(emoji)
 
-    # потом новые safe fallback
     for emoji in unknown_fallback:
         if emoji not in candidates:
             candidates.append(emoji)
 
-    # и только потом рабочие fallback
     for emoji in allowed_fallback:
         if emoji not in candidates:
             candidates.append(emoji)
@@ -731,8 +736,6 @@ def pick_reaction_by_label(chat_id: int, label: str) -> str:
     allowed_category = [e for e in category_pool if e in allowed and e not in blocked]
     unknown_category = [e for e in category_pool if e not in allowed and e not in blocked]
 
-    # 30% шанс исследовать новую реакцию категории,
-    # даже если уже есть рабочая
     if unknown_category and random.random() < 0.80:
         return pick_from_pool_avoiding_repeat(chat_id, unknown_category, last_used_reaction)
 
@@ -749,10 +752,11 @@ def pick_reaction_by_label(chat_id: int, label: str) -> str:
 async def human_delay():
     base = random.uniform(MIN_DELAY, MAX_DELAY)
 
-    hour = (time.localtime().tm_hour + 5) % 24
-
+    hour = get_local_hour()
     if 1 <= hour <= 6:
-        base *= 2  # ночью медленнее
+        base *= 2.0
+    elif 7 <= hour <= 11:
+        base *= 1.25
 
     await asyncio.sleep(base)
 
@@ -840,10 +844,12 @@ async def inactivity_loop():
                 continue
 
             now = time.time()
-            current_hour = (time.localtime(now).tm_hour + 5) % 24
+            hour = get_local_hour()
+            activity_multiplier = get_activity_multiplier(hour)
 
             for chat_id, last_time in list(last_message_time.items()):
-                if current_hour in QUIET_HOURS:
+                # только личка для теста
+                if TEST_INIT_PRIVATE_ONLY and chat_id < 0:
                     continue
 
                 silent_for = now - last_time
@@ -853,12 +859,15 @@ async def inactivity_loop():
                 if now - chat_state[chat_id]["last_init_at"] < INIT_MIN_GAP:
                     continue
 
-                multiplier = get_activity_multiplier()
-                final_chance = INIT_MESSAGE_CHANCE * multiplier
-
+                final_chance = INIT_MESSAGE_CHANCE * activity_multiplier
                 roll = random.random()
 
-                print(f"activity_mult={multiplier} final_chance={final_chance} roll={roll}")
+                print(
+                    f"INIT CHECK | chat={chat_id} | hour={hour} | "
+                    f"silent_for={int(silent_for)} | "
+                    f"activity={activity_multiplier} | "
+                    f"chance={round(final_chance, 3)} | roll={round(roll, 3)}"
+                )
 
                 if roll > final_chance:
                     continue
@@ -906,12 +915,10 @@ async def handle_new_message(event):
         mentioned = any(name and name.lower() in cleaned for name in BOT_NAME_HINTS)
         context_messages = list(recent_messages[chat_id])
 
-        # 1) локальная классификация
         rule_label, rule_confidence, _ = score_with_rules(text, context_messages)
         final_label = rule_label
         final_confidence = rule_confidence
 
-        # 2) HF только для реально сложных сообщений
         use_ai_now = (
             USE_AI_CLASSIFICATION
             and bool(HF_API_TOKEN)
@@ -940,12 +947,10 @@ async def handle_new_message(event):
                     final_label = ai_label
                     final_confidence = ai_score
 
-        # 3) реакция
         if ENABLE_REACTIONS and should_send_reaction(chat_id, text):
             emoji = pick_reaction_by_label(chat_id, final_label)
             await send_reaction(event, emoji, final_label)
 
-        # 4) текстовый ответ
         if ENABLE_TEXT_REPLIES and should_send_text(chat_id, text, mentioned, final_label):
             reply = pick_reply_by_label(chat_id, final_label, text)
             await send_text(event, reply)
@@ -975,6 +980,14 @@ async def run_bot_forever():
 
             me = await client.get_me()
             print(f"Logged in as: {me.first_name} (@{me.username})")
+            print("TZ_OFFSET =", TZ_OFFSET)
+            print("LOCAL_HOUR =", get_local_hour())
+            print("ENABLE_INIT_MESSAGES =", ENABLE_INIT_MESSAGES)
+            print("INACTIVITY_TRIGGER =", INACTIVITY_TRIGGER)
+            print("INACTIVITY_CHECK_INTERVAL =", INACTIVITY_CHECK_INTERVAL)
+            print("INIT_MESSAGE_CHANCE =", INIT_MESSAGE_CHANCE)
+            print("INIT_MIN_GAP =", INIT_MIN_GAP)
+            print("TEST_INIT_PRIVATE_ONLY =", TEST_INIT_PRIVATE_ONLY)
 
             if me.username:
                 BOT_NAME_HINTS.append(me.username.lower())
