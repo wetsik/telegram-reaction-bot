@@ -62,7 +62,7 @@ USE_AI_CLASSIFICATION = os.environ.get(
 ENABLE_REACTIONS = True
 ENABLE_TEXT_REPLIES = True
 MIN_TEXT_LEN = 1
-QUIET_HOURS = {1, 2, 3, 4, 5, 6}
+QUIET_HOURS = set()
 BOT_NAME_HINTS = ["бот", "bot"]
 
 # =========================================================
