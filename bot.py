@@ -48,20 +48,31 @@ RECENT_BOT_TEXTS_LIMIT = int(os.environ.get("RECENT_BOT_TEXTS_LIMIT", "12"))
 MAX_CONTEXT = int(os.environ.get("MAX_CONTEXT", "8"))
 
 # инициативные сообщения
-ENABLE_INIT_MESSAGES = os.environ.get("ENABLE_INIT_MESSAGES", "true").lower() == "true"
+ENABLE_INIT_MESSAGES = os.environ.get(
+    "ENABLE_INIT_MESSAGES", "true").lower() == "true"
 
-INACTIVITY_TRIGGER = int(os.environ.get("INACTIVITY_TRIGGER", "86400"))   # 24 часа тишины
-INACTIVITY_CHECK_INTERVAL = int(os.environ.get("INACTIVITY_CHECK_INTERVAL", "600"))  # проверка раз в 10 минут
-INIT_MESSAGE_CHANCE = float(os.environ.get("INIT_MESSAGE_CHANCE", "1.0")) # если сутки тишина — написать
-INIT_MIN_GAP = int(os.environ.get("INIT_MIN_GAP", "86400"))  # минимум 24 часа между сообщениями
+INACTIVITY_TRIGGER = int(os.environ.get(
+    "INACTIVITY_TRIGGER", "86400"))   # 24 часа тишины
+INACTIVITY_CHECK_INTERVAL = int(os.environ.get(
+    "INACTIVITY_CHECK_INTERVAL", "600"))  # проверка раз в 10 минут
+# если сутки тишина — написать
+INIT_MESSAGE_CHANCE = float(os.environ.get("INIT_MESSAGE_CHANCE", "1.0"))
+INIT_MIN_GAP = int(os.environ.get("INIT_MIN_GAP", "86400")
+                   )  # минимум 24 часа между сообщениями
 
 # писать инициативные сообщения только в личку
-TEST_INIT_PRIVATE_ONLY = os.environ.get("TEST_INIT_PRIVATE_ONLY", "false").lower() == "true"
+TEST_INIT_PRIVATE_ONLY = os.environ.get(
+    "TEST_INIT_PRIVATE_ONLY", "false").lower() == "true"
 
 # AI-классификация
-USE_AI_CLASSIFICATION = os.environ.get("USE_AI_CLASSIFICATION", "true").lower() == "true"
+USE_AI_CLASSIFICATION = os.environ.get(
+    "USE_AI_CLASSIFICATION", "true").lower() == "true"
 
 # общие
+BOT_NAME = "westik"
+BOT_VERSION = "v1.0.0"
+BOT_STAGE = "stable"
+
 ENABLE_REACTIONS = True
 ENABLE_TEXT_REPLIES = True
 MIN_TEXT_LEN = 1
@@ -80,6 +91,8 @@ client = TelegramClient(
 # =========================================================
 # HEALTH SERVER
 # =========================================================
+
+
 class HealthHandler(BaseHTTPRequestHandler):
     def _send_ok(self, body: bool = False):
         self.send_response(200)
@@ -400,6 +413,8 @@ INIT_END = [
 # =========================================================
 # HELPERS
 # =========================================================
+
+
 def clean_text(text: str) -> str:
     text = text.strip().lower()
     text = re.sub(r"\s+", " ", text)
@@ -555,13 +570,15 @@ async def classify_with_hf(text: str):
                 raw_text = await resp.text()
 
                 if resp.status != 200:
-                    print(f"HF API error: status={resp.status}, body={raw_text[:500]}")
+                    print(
+                        f"HF API error: status={resp.status}, body={raw_text[:500]}")
                     return None
 
                 try:
                     data = json.loads(raw_text)
                 except Exception as parse_error:
-                    print(f"HF JSON parse error: {repr(parse_error)} | body={raw_text[:500]}")
+                    print(
+                        f"HF JSON parse error: {repr(parse_error)} | body={raw_text[:500]}")
                     return None
 
         if isinstance(data, dict):
@@ -581,7 +598,8 @@ async def classify_with_hf(text: str):
             if labels and scores:
                 return labels[0], float(scores[0])
 
-        print(f"HF unexpected response format: type={type(data).__name__}, data={str(data)[:500]}")
+        print(
+            f"HF unexpected response format: type={type(data).__name__}, data={str(data)[:500]}")
         return None
 
     except asyncio.TimeoutError as e:
@@ -689,11 +707,15 @@ def build_reaction_candidates(chat_id: int, label: str, preferred_emoji: str | N
 
     category_pool = REACTIONS.get(label, REACTIONS["neutral"])
 
-    allowed_category = [e for e in category_pool if e in allowed and e not in blocked]
-    unknown_category = [e for e in category_pool if e not in allowed and e not in blocked]
+    allowed_category = [
+        e for e in category_pool if e in allowed and e not in blocked]
+    unknown_category = [
+        e for e in category_pool if e not in allowed and e not in blocked]
 
-    allowed_fallback = [e for e in SAFE_EMOJIS if e in allowed and e not in blocked and e not in allowed_category]
-    unknown_fallback = [e for e in SAFE_EMOJIS if e not in allowed and e not in blocked and e not in unknown_category]
+    allowed_fallback = [
+        e for e in SAFE_EMOJIS if e in allowed and e not in blocked and e not in allowed_category]
+    unknown_fallback = [
+        e for e in SAFE_EMOJIS if e not in allowed and e not in blocked and e not in unknown_category]
 
     random.shuffle(allowed_category)
     random.shuffle(unknown_category)
@@ -733,8 +755,10 @@ def pick_reaction_by_label(chat_id: int, label: str) -> str:
     allowed = memory["allowed"]
     blocked = memory["blocked"]
 
-    allowed_category = [e for e in category_pool if e in allowed and e not in blocked]
-    unknown_category = [e for e in category_pool if e not in allowed and e not in blocked]
+    allowed_category = [
+        e for e in category_pool if e in allowed and e not in blocked]
+    unknown_category = [
+        e for e in category_pool if e not in allowed and e not in blocked]
 
     if unknown_category and random.random() < 0.80:
         return pick_from_pool_avoiding_repeat(chat_id, unknown_category, last_used_reaction)
@@ -781,7 +805,8 @@ async def send_reaction(event, emoji: str, label: str):
 
                 memory["allowed"].add(candidate)
                 mark_reaction_sent(chat_id)
-                print(f"Reacted {candidate} to message {event.id} in chat {chat_id}")
+                print(
+                    f"Reacted {candidate} to message {event.id} in chat {chat_id}")
                 return
 
             except FloodWaitError:
@@ -789,10 +814,12 @@ async def send_reaction(event, emoji: str, label: str):
 
             except Exception as inner_error:
                 memory["blocked"].add(candidate)
-                print(f"Reaction {candidate} failed in chat {chat_id}: {inner_error}")
+                print(
+                    f"Reaction {candidate} failed in chat {chat_id}: {inner_error}")
                 continue
 
-        print(f"Skipping reaction for message {event.id} in chat {chat_id}: no valid emoji worked")
+        print(
+            f"Skipping reaction for message {event.id} in chat {chat_id}: no valid emoji worked")
 
     except FloodWaitError as e:
         print(f"FloodWait on reaction: sleeping for {e.seconds} seconds")
@@ -912,10 +939,12 @@ async def handle_new_message(event):
         last_message_time[chat_id] = time.time()
         recent_messages[chat_id].append(cleaned)
 
-        mentioned = any(name and name.lower() in cleaned for name in BOT_NAME_HINTS)
+        mentioned = any(name and name.lower()
+                        in cleaned for name in BOT_NAME_HINTS)
         context_messages = list(recent_messages[chat_id])
 
-        rule_label, rule_confidence, _ = score_with_rules(text, context_messages)
+        rule_label, rule_confidence, _ = score_with_rules(
+            text, context_messages)
         final_label = rule_label
         final_confidence = rule_confidence
 
@@ -975,11 +1004,13 @@ async def run_bot_forever():
 
     while True:
         try:
-            print("Starting Telegram client...")
+            print(f"Starting {BOT_NAME} {BOT_VERSION} [{BOT_STAGE}]...")
             await client.start()
 
             me = await client.get_me()
-            print(f"Logged in as: {me.first_name} (@{me.username})")
+            print(
+                f"{BOT_NAME} {BOT_VERSION} [{BOT_STAGE}] logged in as: {me.first_name} (@{me.username})")
+
             print("TZ_OFFSET =", TZ_OFFSET)
             print("LOCAL_HOUR =", get_local_hour())
             print("ENABLE_INIT_MESSAGES =", ENABLE_INIT_MESSAGES)
