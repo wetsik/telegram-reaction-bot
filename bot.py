@@ -45,24 +45,19 @@ RECENT_BOT_TEXTS_LIMIT = int(os.environ.get("RECENT_BOT_TEXTS_LIMIT", "12"))
 MAX_CONTEXT = int(os.environ.get("MAX_CONTEXT", "8"))
 
 # инициативные сообщения
-ENABLE_INIT_MESSAGES = os.environ.get(
-    "ENABLE_INIT_MESSAGES", "true").lower() == "true"
-INACTIVITY_TRIGGER = int(os.environ.get(
-    "INACTIVITY_TRIGGER", "30"))   # 1 минута
-INACTIVITY_CHECK_INTERVAL = int(
-    os.environ.get("INACTIVITY_CHECK_INTERVAL", "10"))
-INIT_MESSAGE_CHANCE = float(os.environ.get("INIT_MESSAGE_CHANCE", "1.0"))
-INIT_MIN_GAP = int(os.environ.get("INIT_MIN_GAP", "30"))  # 2 минуты
+ENABLE_INIT_MESSAGES = os.environ.get("ENABLE_INIT_MESSAGES", "true").lower() == "true"
+INACTIVITY_TRIGGER = int(os.environ.get("INACTIVITY_TRIGGER", "1200"))  # 20 минут
+INACTIVITY_CHECK_INTERVAL = int(os.environ.get("INACTIVITY_CHECK_INTERVAL", "60"))
+INIT_MESSAGE_CHANCE = float(os.environ.get("INIT_MESSAGE_CHANCE", "0.60"))
+INIT_MIN_GAP = int(os.environ.get("INIT_MIN_GAP", "1800"))  # 30 минут
 
 # AI-классификация
-USE_AI_CLASSIFICATION = os.environ.get(
-    "USE_AI_CLASSIFICATION", "true").lower() == "true"
+USE_AI_CLASSIFICATION = os.environ.get("USE_AI_CLASSIFICATION", "true").lower() == "true"
 
 # общие
 ENABLE_REACTIONS = True
 ENABLE_TEXT_REPLIES = True
 MIN_TEXT_LEN = 1
-QUIET_HOURS = set()
 BOT_NAME_HINTS = ["бот", "bot"]
 
 # =========================================================
@@ -77,8 +72,6 @@ client = TelegramClient(
 # =========================================================
 # HEALTH SERVER
 # =========================================================
-
-
 class HealthHandler(BaseHTTPRequestHandler):
     def _send_ok(self, body: bool = False):
         self.send_response(200)
@@ -112,6 +105,33 @@ def run_health_server():
     print(f"Health server started on port {PORT}")
     server.serve_forever()
 
+# =========================================================
+# ACTIVITY
+# =========================================================
+def get_activity_multiplier():
+    hour = time.localtime().tm_hour
+
+    # если сервер не твой часовой пояс (например UTC)
+    # для Узбекистана добавь +5:
+    hour = (hour + 5) % 24
+
+    # ночь (почти не пишет)
+    if 1 <= hour <= 6:
+        return 0.05
+
+    # утро (слабый актив)
+    elif 7 <= hour <= 11:
+        return 0.4
+
+    # день (норм)
+    elif 12 <= hour <= 18:
+        return 0.7
+
+    # вечер (пик)
+    elif 19 <= hour <= 23:
+        return 1.0
+
+    return 0.3
 
 # =========================================================
 # MEMORY
@@ -371,8 +391,6 @@ INIT_END = [
 # =========================================================
 # HELPERS
 # =========================================================
-
-
 def clean_text(text: str) -> str:
     text = text.strip().lower()
     text = re.sub(r"\s+", " ", text)
@@ -528,15 +546,13 @@ async def classify_with_hf(text: str):
                 raw_text = await resp.text()
 
                 if resp.status != 200:
-                    print(
-                        f"HF API error: status={resp.status}, body={raw_text[:500]}")
+                    print(f"HF API error: status={resp.status}, body={raw_text[:500]}")
                     return None
 
                 try:
                     data = json.loads(raw_text)
                 except Exception as parse_error:
-                    print(
-                        f"HF JSON parse error: {repr(parse_error)} | body={raw_text[:500]}")
+                    print(f"HF JSON parse error: {repr(parse_error)} | body={raw_text[:500]}")
                     return None
 
         if isinstance(data, dict):
@@ -556,8 +572,7 @@ async def classify_with_hf(text: str):
             if labels and scores:
                 return labels[0], float(scores[0])
 
-        print(
-            f"HF unexpected response format: type={type(data).__name__}, data={str(data)[:500]}")
+        print(f"HF unexpected response format: type={type(data).__name__}, data={str(data)[:500]}")
         return None
 
     except asyncio.TimeoutError as e:
@@ -665,15 +680,11 @@ def build_reaction_candidates(chat_id: int, label: str, preferred_emoji: str | N
 
     category_pool = REACTIONS.get(label, REACTIONS["neutral"])
 
-    allowed_category = [
-        e for e in category_pool if e in allowed and e not in blocked]
-    unknown_category = [
-        e for e in category_pool if e not in allowed and e not in blocked]
+    allowed_category = [e for e in category_pool if e in allowed and e not in blocked]
+    unknown_category = [e for e in category_pool if e not in allowed and e not in blocked]
 
-    allowed_fallback = [
-        e for e in SAFE_EMOJIS if e in allowed and e not in blocked and e not in allowed_category]
-    unknown_fallback = [
-        e for e in SAFE_EMOJIS if e not in allowed and e not in blocked and e not in unknown_category]
+    allowed_fallback = [e for e in SAFE_EMOJIS if e in allowed and e not in blocked and e not in allowed_category]
+    unknown_fallback = [e for e in SAFE_EMOJIS if e not in allowed and e not in blocked and e not in unknown_category]
 
     random.shuffle(allowed_category)
     random.shuffle(unknown_category)
@@ -717,10 +728,8 @@ def pick_reaction_by_label(chat_id: int, label: str) -> str:
     allowed = memory["allowed"]
     blocked = memory["blocked"]
 
-    allowed_category = [
-        e for e in category_pool if e in allowed and e not in blocked]
-    unknown_category = [
-        e for e in category_pool if e not in allowed and e not in blocked]
+    allowed_category = [e for e in category_pool if e in allowed and e not in blocked]
+    unknown_category = [e for e in category_pool if e not in allowed and e not in blocked]
 
     # 30% шанс исследовать новую реакцию категории,
     # даже если уже есть рабочая
@@ -738,7 +747,14 @@ def pick_reaction_by_label(chat_id: int, label: str) -> str:
 
 
 async def human_delay():
-    await asyncio.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
+    base = random.uniform(MIN_DELAY, MAX_DELAY)
+
+    hour = (time.localtime().tm_hour + 5) % 24
+
+    if 1 <= hour <= 6:
+        base *= 2  # ночью медленнее
+
+    await asyncio.sleep(base)
 
 
 async def send_reaction(event, emoji: str, label: str):
@@ -761,8 +777,7 @@ async def send_reaction(event, emoji: str, label: str):
 
                 memory["allowed"].add(candidate)
                 mark_reaction_sent(chat_id)
-                print(
-                    f"Reacted {candidate} to message {event.id} in chat {chat_id}")
+                print(f"Reacted {candidate} to message {event.id} in chat {chat_id}")
                 return
 
             except FloodWaitError:
@@ -770,12 +785,10 @@ async def send_reaction(event, emoji: str, label: str):
 
             except Exception as inner_error:
                 memory["blocked"].add(candidate)
-                print(
-                    f"Reaction {candidate} failed in chat {chat_id}: {inner_error}")
+                print(f"Reaction {candidate} failed in chat {chat_id}: {inner_error}")
                 continue
 
-        print(
-            f"Skipping reaction for message {event.id} in chat {chat_id}: no valid emoji worked")
+        print(f"Skipping reaction for message {event.id} in chat {chat_id}: no valid emoji worked")
 
     except FloodWaitError as e:
         print(f"FloodWait on reaction: sleeping for {e.seconds} seconds")
@@ -819,67 +832,47 @@ async def send_init_message(chat_id: int):
 
 
 async def inactivity_loop():
-    print("Inactivity loop started")
-
     while True:
         try:
             await asyncio.sleep(INACTIVITY_CHECK_INTERVAL)
 
             if not ENABLE_INIT_MESSAGES:
-                print("INIT: disabled")
                 continue
 
             now = time.time()
-            current_hour = time.localtime(now).tm_hour
-
-            print(
-                f"INIT LOOP | hour={current_hour} | tracked_chats={list(last_message_time.keys())}")
+            current_hour = (time.localtime(now).tm_hour + 5) % 24
 
             for chat_id, last_time in list(last_message_time.items()):
-                print(f"CHECK chat_id={chat_id}")
-
-                # только личка
-                if chat_id < 0:
-                    print(f"SKIP {chat_id}: not private")
-                    continue
-
                 if current_hour in QUIET_HOURS:
-                    print(f"SKIP {chat_id}: quiet hours")
                     continue
 
                 silent_for = now - last_time
-                print(f"chat {chat_id} silent_for={int(silent_for)}")
-
                 if silent_for < INACTIVITY_TRIGGER:
-                    print(f"SKIP {chat_id}: not enough inactivity")
                     continue
 
-                since_last_init = now - chat_state[chat_id]["last_init_at"]
-                print(f"chat {chat_id} since_last_init={int(since_last_init)}")
-
-                if since_last_init < INIT_MIN_GAP:
-                    print(f"SKIP {chat_id}: init cooldown")
+                if now - chat_state[chat_id]["last_init_at"] < INIT_MIN_GAP:
                     continue
+
+                multiplier = get_activity_multiplier()
+                final_chance = INIT_MESSAGE_CHANCE * multiplier
 
                 roll = random.random()
-                print(
-                    f"chat {chat_id} roll={roll} chance={INIT_MESSAGE_CHANCE}")
 
-                if roll > INIT_MESSAGE_CHANCE:
-                    print(f"SKIP {chat_id}: random failed")
+                print(f"activity_mult={multiplier} final_chance={final_chance} roll={roll}")
+
+                if roll > final_chance:
                     continue
 
-                print(f"SENDING INIT TO {chat_id}")
                 await send_init_message(chat_id)
                 last_message_time[chat_id] = time.time()
 
         except Exception as e:
             print("Inactivity loop error:", e)
+
+
 # =========================================================
 # MAIN HANDLER
 # =========================================================
-
-
 @client.on(events.NewMessage(incoming=True))
 async def handle_new_message(event):
     try:
@@ -908,16 +901,13 @@ async def handle_new_message(event):
             return
 
         last_message_time[chat_id] = time.time()
-        print(f"TRACKED MESSAGE in chat {chat_id}: {text}")
         recent_messages[chat_id].append(cleaned)
 
-        mentioned = any(name and name.lower()
-                        in cleaned for name in BOT_NAME_HINTS)
+        mentioned = any(name and name.lower() in cleaned for name in BOT_NAME_HINTS)
         context_messages = list(recent_messages[chat_id])
 
         # 1) локальная классификация
-        rule_label, rule_confidence, _ = score_with_rules(
-            text, context_messages)
+        rule_label, rule_confidence, _ = score_with_rules(text, context_messages)
         final_label = rule_label
         final_confidence = rule_confidence
 
@@ -985,13 +975,6 @@ async def run_bot_forever():
 
             me = await client.get_me()
             print(f"Logged in as: {me.first_name} (@{me.username})")
-            print("INIT SETTINGS:")
-            print("ENABLE_INIT_MESSAGES =", ENABLE_INIT_MESSAGES)
-            print("INACTIVITY_TRIGGER =", INACTIVITY_TRIGGER)
-            print("INACTIVITY_CHECK_INTERVAL =", INACTIVITY_CHECK_INTERVAL)
-            print("INIT_MESSAGE_CHANCE =", INIT_MESSAGE_CHANCE)
-            print("INIT_MIN_GAP =", INIT_MIN_GAP)
-            print("QUIET_HOURS =", QUIET_HOURS)
 
             if me.username:
                 BOT_NAME_HINTS.append(me.username.lower())
@@ -1001,7 +984,6 @@ async def run_bot_forever():
             BOT_NAME_HINTS[:] = list(dict.fromkeys(BOT_NAME_HINTS))
 
             if ENABLE_INIT_MESSAGES and (inactivity_task is None or inactivity_task.done()):
-                print("Starting inactivity loop...")
                 inactivity_task = asyncio.create_task(inactivity_loop())
 
             print("Userbot started and listening for new messages...")
