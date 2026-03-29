@@ -48,11 +48,11 @@ MAX_CONTEXT = int(os.environ.get("MAX_CONTEXT", "8"))
 ENABLE_INIT_MESSAGES = os.environ.get(
     "ENABLE_INIT_MESSAGES", "true").lower() == "true"
 INACTIVITY_TRIGGER = int(os.environ.get(
-    "INACTIVITY_TRIGGER", "60"))   # 1 минута
+    "INACTIVITY_TRIGGER", "30"))   # 1 минута
 INACTIVITY_CHECK_INTERVAL = int(
     os.environ.get("INACTIVITY_CHECK_INTERVAL", "10"))
 INIT_MESSAGE_CHANCE = float(os.environ.get("INIT_MESSAGE_CHANCE", "1.0"))
-INIT_MIN_GAP = int(os.environ.get("INIT_MIN_GAP", "120"))  # 2 минуты
+INIT_MIN_GAP = int(os.environ.get("INIT_MIN_GAP", "30"))  # 2 минуты
 
 # AI-классификация
 USE_AI_CLASSIFICATION = os.environ.get(
@@ -819,40 +819,62 @@ async def send_init_message(chat_id: int):
 
 
 async def inactivity_loop():
+    print("Inactivity loop started")
+
     while True:
         try:
             await asyncio.sleep(INACTIVITY_CHECK_INTERVAL)
 
             if not ENABLE_INIT_MESSAGES:
+                print("INIT: disabled")
                 continue
 
             now = time.time()
             current_hour = time.localtime(now).tm_hour
 
+            print(
+                f"INIT LOOP | hour={current_hour} | tracked_chats={list(last_message_time.keys())}")
+
             for chat_id, last_time in list(last_message_time.items()):
-                # тест только в личке
+                print(f"CHECK chat_id={chat_id}")
+
+                # только личка
                 if chat_id < 0:
+                    print(f"SKIP {chat_id}: not private")
                     continue
 
                 if current_hour in QUIET_HOURS:
+                    print(f"SKIP {chat_id}: quiet hours")
                     continue
 
                 silent_for = now - last_time
+                print(f"chat {chat_id} silent_for={int(silent_for)}")
+
                 if silent_for < INACTIVITY_TRIGGER:
+                    print(f"SKIP {chat_id}: not enough inactivity")
                     continue
 
-                if now - chat_state[chat_id]["last_init_at"] < INIT_MIN_GAP:
+                since_last_init = now - chat_state[chat_id]["last_init_at"]
+                print(f"chat {chat_id} since_last_init={int(since_last_init)}")
+
+                if since_last_init < INIT_MIN_GAP:
+                    print(f"SKIP {chat_id}: init cooldown")
                     continue
 
-                if random.random() > INIT_MESSAGE_CHANCE:
+                roll = random.random()
+                print(
+                    f"chat {chat_id} roll={roll} chance={INIT_MESSAGE_CHANCE}")
+
+                if roll > INIT_MESSAGE_CHANCE:
+                    print(f"SKIP {chat_id}: random failed")
                     continue
 
+                print(f"SENDING INIT TO {chat_id}")
                 await send_init_message(chat_id)
                 last_message_time[chat_id] = time.time()
 
         except Exception as e:
             print("Inactivity loop error:", e)
-
 # =========================================================
 # MAIN HANDLER
 # =========================================================
@@ -886,6 +908,7 @@ async def handle_new_message(event):
             return
 
         last_message_time[chat_id] = time.time()
+        print(f"TRACKED MESSAGE in chat {chat_id}: {text}")
         recent_messages[chat_id].append(cleaned)
 
         mentioned = any(name and name.lower()
@@ -962,6 +985,13 @@ async def run_bot_forever():
 
             me = await client.get_me()
             print(f"Logged in as: {me.first_name} (@{me.username})")
+            print("INIT SETTINGS:")
+            print("ENABLE_INIT_MESSAGES =", ENABLE_INIT_MESSAGES)
+            print("INACTIVITY_TRIGGER =", INACTIVITY_TRIGGER)
+            print("INACTIVITY_CHECK_INTERVAL =", INACTIVITY_CHECK_INTERVAL)
+            print("INIT_MESSAGE_CHANCE =", INIT_MESSAGE_CHANCE)
+            print("INIT_MIN_GAP =", INIT_MIN_GAP)
+            print("QUIET_HOURS =", QUIET_HOURS)
 
             if me.username:
                 BOT_NAME_HINTS.append(me.username.lower())
@@ -971,6 +1001,7 @@ async def run_bot_forever():
             BOT_NAME_HINTS[:] = list(dict.fromkeys(BOT_NAME_HINTS))
 
             if ENABLE_INIT_MESSAGES and (inactivity_task is None or inactivity_task.done()):
+                print("Starting inactivity loop...")
                 inactivity_task = asyncio.create_task(inactivity_loop())
 
             print("Userbot started and listening for new messages...")
