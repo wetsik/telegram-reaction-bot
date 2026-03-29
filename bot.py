@@ -50,11 +50,10 @@ MAX_CONTEXT = int(os.environ.get("MAX_CONTEXT", "8"))
 # инициативные сообщения
 ENABLE_INIT_MESSAGES = os.environ.get("ENABLE_INIT_MESSAGES", "true").lower() == "true"
 
-# для теста можно поставить 30 / 5 / 1.0 / 60
-INACTIVITY_TRIGGER = int(os.environ.get("INACTIVITY_TRIGGER", "1200"))  # 20 минут
-INACTIVITY_CHECK_INTERVAL = int(os.environ.get("INACTIVITY_CHECK_INTERVAL", "60"))
-INIT_MESSAGE_CHANCE = float(os.environ.get("INIT_MESSAGE_CHANCE", "0.35"))
-INIT_MIN_GAP = int(os.environ.get("INIT_MIN_GAP", "3600"))  # 1 час
+INACTIVITY_TRIGGER = int(os.environ.get("INACTIVITY_TRIGGER", "86400"))   # 24 часа тишины
+INACTIVITY_CHECK_INTERVAL = int(os.environ.get("INACTIVITY_CHECK_INTERVAL", "600"))  # проверка раз в 10 минут
+INIT_MESSAGE_CHANCE = float(os.environ.get("INIT_MESSAGE_CHANCE", "1.0")) # если сутки тишина — написать
+INIT_MIN_GAP = int(os.environ.get("INIT_MIN_GAP", "86400"))  # минимум 24 часа между сообщениями
 
 # писать инициативные сообщения только в личку
 TEST_INIT_PRIVATE_ONLY = os.environ.get("TEST_INIT_PRIVATE_ONLY", "false").lower() == "true"
