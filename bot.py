@@ -32,14 +32,14 @@ MAX_DELAY = float(os.environ.get("MAX_DELAY", "0.9"))
 
 # частота действий
 REACTION_CHANCE = float(os.environ.get("REACTION_CHANCE", "0.98"))
-TEXT_REPLY_CHANCE = float(os.environ.get("TEXT_REPLY_CHANCE", "0.30"))
-MENTION_REPLY_CHANCE = float(os.environ.get("MENTION_REPLY_CHANCE", "0.95"))
+TEXT_REPLY_CHANCE = float(os.environ.get("TEXT_REPLY_CHANCE", "0.55"))
+MENTION_REPLY_CHANCE = float(os.environ.get("MENTION_REPLY_CHANCE", "8"))
 
 # лимиты
 TEXT_COOLDOWN = int(os.environ.get("TEXT_COOLDOWN", "20"))
 REACTION_COOLDOWN = int(os.environ.get("REACTION_COOLDOWN", "0"))
 
-MAX_TEXTS_PER_HOUR = int(os.environ.get("MAX_TEXTS_PER_HOUR", "25"))
+MAX_TEXTS_PER_HOUR = int(os.environ.get("MAX_TEXTS_PER_HOUR", "40"))
 MAX_REACTIONS_PER_HOUR = int(os.environ.get("MAX_REACTIONS_PER_HOUR", "160"))
 
 # память
@@ -66,6 +66,7 @@ USE_AI_CLASSIFICATION = os.environ.get("USE_AI_CLASSIFICATION", "true").lower() 
 ENABLE_REACTIONS = True
 ENABLE_TEXT_REPLIES = True
 MIN_TEXT_LEN = 1
+QUIET_HOURS = set()
 BOT_NAME_HINTS = ["бот", "bot"]
 
 # =========================================================
@@ -658,7 +659,7 @@ def should_send_text(chat_id: int, text: str, mentioned: bool, label: str) -> bo
     chance += recent_activity_bonus(chat_id)
 
     # живой режим: текст ночью заметно реже
-    chance *= get_activity_multiplier(hour)
+    chance *= (0.75 + 0.25 * get_activity_multiplier(hour))
 
     return random.random() < min(chance, 1.0)
 
