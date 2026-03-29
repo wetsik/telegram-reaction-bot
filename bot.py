@@ -57,7 +57,7 @@ INIT_MESSAGE_CHANCE = float(os.environ.get("INIT_MESSAGE_CHANCE", "0.35"))
 INIT_MIN_GAP = int(os.environ.get("INIT_MIN_GAP", "3600"))  # 1 час
 
 # писать инициативные сообщения только в личку
-TEST_INIT_PRIVATE_ONLY = os.environ.get("TEST_INIT_PRIVATE_ONLY", "true").lower() == "true"
+TEST_INIT_PRIVATE_ONLY = os.environ.get("TEST_INIT_PRIVATE_ONLY", "false").lower() == "false"
 
 # AI-классификация
 USE_AI_CLASSIFICATION = os.environ.get("USE_AI_CLASSIFICATION", "true").lower() == "true"
