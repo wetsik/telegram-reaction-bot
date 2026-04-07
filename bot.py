@@ -57,8 +57,8 @@ INACTIVITY_CHECK_INTERVAL = int(os.environ.get(
     "INACTIVITY_CHECK_INTERVAL", "600"))  # проверка раз в 10 минут
 # если сутки тишина — написать
 INIT_MESSAGE_CHANCE = float(os.environ.get("INIT_MESSAGE_CHANCE", "1.0"))
-INIT_MIN_GAP = int(os.environ.get("INIT_MIN_GAP", "86400")
-                   )  # минимум 24 часа между сообщениями
+INIT_MIN_GAP = int(os.environ.get("INIT_MIN_GAP", "604800")
+                   )  # минимум 1 неделя между сообщениями
 
 # писать инициативные сообщения только в личку
 TEST_INIT_PRIVATE_ONLY = os.environ.get(
