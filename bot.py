@@ -5,6 +5,9 @@ import json
 import random
 import asyncio
 import threading
+import shutil
+import uuid
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from collections import defaultdict, deque
 
@@ -22,6 +25,11 @@ SESSION_STRING = os.environ["SESSION_STRING"]
 
 PORT = int(os.environ.get("PORT", "10000"))
 HF_API_TOKEN = os.environ.get("HF_API_TOKEN", "").strip()
+
+DOWNLOADS_DIR = Path("downloads")
+OUTPUTS_DIR = Path("outputs")
+SUPPORTED_MEDIA_EXTENSIONS = {".mp3", ".wav", ".m4a", ".mp4"}
+URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 
 # твой сдвиг по времени (Узбекистан = +5)
 TZ_OFFSET = int(os.environ.get("TZ_OFFSET", "5"))
@@ -907,6 +915,209 @@ async def inactivity_loop():
 
 
 # =========================================================
+# PRIVATE DM VOCAL REMOVER
+# =========================================================
+def ensure_media_dirs():
+    DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def extract_first_url(text: str) -> str | None:
+    match = URL_RE.search(text or "")
+    if not match:
+        return None
+
+    return match.group(0).rstrip(").,!?\"'")
+
+
+def is_supported_media_file(path: Path) -> bool:
+    return path.suffix.lower() in SUPPORTED_MEDIA_EXTENSIONS
+
+
+async def run_command(*args: str, cwd: Path | None = None) -> tuple[int, str, str]:
+    process = await asyncio.create_subprocess_exec(
+        *args,
+        cwd=str(cwd) if cwd else None,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = await process.communicate()
+    return (
+        process.returncode,
+        stdout.decode("utf-8", errors="replace"),
+        stderr.decode("utf-8", errors="replace")
+    )
+
+
+async def download_telegram_media(event, job_id: str) -> Path | None:
+    ensure_media_dirs()
+    job_download_dir = DOWNLOADS_DIR / job_id
+    job_download_dir.mkdir(parents=True, exist_ok=True)
+
+    downloaded = await event.message.download_media(
+        file=str(job_download_dir)
+    )
+    if not downloaded:
+        return None
+
+    path = Path(downloaded)
+    if not is_supported_media_file(path):
+        return None
+
+    return path
+
+
+async def download_url_media(url: str, job_id: str) -> Path | None:
+    ensure_media_dirs()
+    job_download_dir = DOWNLOADS_DIR / job_id
+    job_download_dir.mkdir(parents=True, exist_ok=True)
+
+    output_template = str(job_download_dir / "%(title).80s.%(ext)s")
+    code, stdout, stderr = await run_command(
+        "yt-dlp",
+        "--no-playlist",
+        "-x",
+        "--audio-format",
+        "mp3",
+        "-f",
+        "bestaudio/best",
+        "-o",
+        output_template,
+        url
+    )
+    if code != 0:
+        print(f"yt-dlp failed: {stderr or stdout}")
+        return None
+
+    candidates = [
+        path for path in job_download_dir.iterdir()
+        if path.is_file() and is_supported_media_file(path)
+    ]
+    if not candidates:
+        print(f"yt-dlp produced no supported file for {url}")
+        return None
+
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def find_no_vocals_file(input_file: Path, job_output_dir: Path) -> Path | None:
+    search_roots = [
+        job_output_dir / "htdemucs",
+        OUTPUTS_DIR / "htdemucs",
+        Path("separated") / "htdemucs",
+    ]
+
+    preferred_track_dir = input_file.stem
+    for root in search_roots:
+        preferred = root / preferred_track_dir / "no_vocals.wav"
+        if preferred.exists():
+            return preferred
+
+        matches = list(root.glob("*/no_vocals.wav")) if root.exists() else []
+        if matches:
+            return max(matches, key=lambda p: p.stat().st_mtime)
+
+    return None
+
+
+async def separate_vocals(input_file: Path, job_id: str) -> Path | None:
+    job_output_dir = OUTPUTS_DIR / job_id
+    job_output_dir.mkdir(parents=True, exist_ok=True)
+
+    code, stdout, stderr = await run_command(
+        "demucs",
+        "-n",
+        "htdemucs",
+        "--two-stems=vocals",
+        "-o",
+        str(job_output_dir),
+        str(input_file)
+    )
+    if code != 0:
+        print(f"demucs failed: {stderr or stdout}")
+        return None
+
+    return find_no_vocals_file(input_file, job_output_dir)
+
+
+async def send_audio_result(event, audio_file: Path):
+    await client.send_file(
+        event.chat_id,
+        file=str(audio_file),
+        caption="Готово 🎧",
+        force_document=False,
+        attributes=[
+            types.DocumentAttributeAudio(
+                duration=0,
+                title="No vocals"
+            )
+        ]
+    )
+
+
+def cleanup_job_files(job_id: str, input_file: Path | None):
+    paths_to_remove = [
+        DOWNLOADS_DIR / job_id,
+        OUTPUTS_DIR / job_id,
+    ]
+
+    if input_file:
+        paths_to_remove.append(input_file)
+
+    for path in paths_to_remove:
+        try:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            elif path.exists():
+                path.unlink()
+        except Exception as e:
+            print(f"Cleanup failed for {path}: {e}")
+
+
+async def handle_private_vocal_remover(event):
+    status_message = None
+    input_file = None
+    job_id = uuid.uuid4().hex
+
+    try:
+        text = event.raw_text or ""
+        url = extract_first_url(text)
+
+        if event.message.media:
+            status_message = await event.respond("⏳ Обрабатываю...")
+            input_file = await download_telegram_media(event, job_id)
+        elif url:
+            status_message = await event.respond("⏳ Обрабатываю...")
+            input_file = await download_url_media(url, job_id)
+        else:
+            return
+
+        if not input_file:
+            await event.respond("Ошибка обработки")
+            return
+
+        no_vocals = await separate_vocals(input_file, job_id)
+        if not no_vocals:
+            await event.respond("Ошибка обработки")
+            return
+
+        await send_audio_result(event, no_vocals)
+
+        if status_message:
+            try:
+                await status_message.delete()
+            except Exception:
+                pass
+
+    except Exception as e:
+        print(f"PRIVATE VOCAL REMOVER ERROR: {e}")
+        await event.respond("Ошибка обработки")
+
+    finally:
+        cleanup_job_files(job_id, input_file)
+
+
+# =========================================================
 # MAIN HANDLER
 # =========================================================
 @client.on(events.NewMessage(incoming=True))
@@ -919,78 +1130,81 @@ async def handle_new_message(event):
             return
 
         text = event.raw_text or ""
-        if not text.strip():
-            return
-
         sender = await event.get_sender()
         me = await client.get_me()
 
         if sender and me and getattr(sender, "id", None) == me.id:
             return
 
-        chat_id = event.chat_id
-        cleaned = clean_text(text)
+        if event.is_private:
+            await handle_private_vocal_remover(event)
+        else:
+            if not text.strip():
+                return
 
-        if contains_blacklisted(cleaned):
+            chat_id = event.chat_id
+            cleaned = clean_text(text)
+
+            if contains_blacklisted(cleaned):
+                last_message_time[chat_id] = time.time()
+                recent_messages[chat_id].append(cleaned)
+                return
+
             last_message_time[chat_id] = time.time()
             recent_messages[chat_id].append(cleaned)
-            return
 
-        last_message_time[chat_id] = time.time()
-        recent_messages[chat_id].append(cleaned)
+            mentioned = any(name and name.lower()
+                            in cleaned for name in BOT_NAME_HINTS)
+            context_messages = list(recent_messages[chat_id])
 
-        mentioned = any(name and name.lower()
-                        in cleaned for name in BOT_NAME_HINTS)
-        context_messages = list(recent_messages[chat_id])
+            rule_label, rule_confidence, _ = score_with_rules(
+                text, context_messages)
+            final_label = rule_label
+            final_confidence = rule_confidence
 
-        rule_label, rule_confidence, _ = score_with_rules(
-            text, context_messages)
-        final_label = rule_label
-        final_confidence = rule_confidence
-
-        use_ai_now = (
-            USE_AI_CLASSIFICATION
-            and bool(HF_API_TOKEN)
-            and len(text.strip()) >= 20
-            and len(text.split()) >= 4
-            and (
-                rule_confidence < 1.2
-                or len(text) > 35
-                or (
-                    "но" in cleaned
-                    or "хотя" in cleaned
-                    or "зато" in cleaned
-                    or "если" in cleaned
-                    or "потому" in cleaned
-                    or "либо" in cleaned
+            use_ai_now = (
+                USE_AI_CLASSIFICATION
+                and bool(HF_API_TOKEN)
+                and len(text.strip()) >= 20
+                and len(text.split()) >= 4
+                and (
+                    rule_confidence < 1.2
+                    or len(text) > 35
+                    or (
+                        "но" in cleaned
+                        or "хотя" in cleaned
+                        or "зато" in cleaned
+                        or "если" in cleaned
+                        or "потому" in cleaned
+                        or "либо" in cleaned
+                    )
                 )
             )
-        )
 
-        if use_ai_now:
-            ai_input = build_ai_input(text, context_messages)
-            ai_result = await classify_with_hf(ai_input)
-            if ai_result:
-                ai_label, ai_score = ai_result
-                if ai_score >= 0.60:
-                    final_label = ai_label
-                    final_confidence = ai_score
+            if use_ai_now:
+                ai_input = build_ai_input(text, context_messages)
+                ai_result = await classify_with_hf(ai_input)
+                if ai_result:
+                    ai_label, ai_score = ai_result
+                    if ai_score >= 0.60:
+                        final_label = ai_label
+                        final_confidence = ai_score
 
-        if ENABLE_REACTIONS and should_send_reaction(chat_id, text):
-            emoji = pick_reaction_by_label(chat_id, final_label)
-            await send_reaction(event, emoji, final_label)
+            if ENABLE_REACTIONS and should_send_reaction(chat_id, text):
+                emoji = pick_reaction_by_label(chat_id, final_label)
+                await send_reaction(event, emoji, final_label)
 
-        if ENABLE_TEXT_REPLIES and should_send_text(chat_id, text, mentioned, final_label):
-            reply = pick_reply_by_label(chat_id, final_label, text)
-            await send_text(event, reply)
+            if ENABLE_TEXT_REPLIES and should_send_text(chat_id, text, mentioned, final_label):
+                reply = pick_reply_by_label(chat_id, final_label, text)
+                await send_text(event, reply)
 
-        print(json.dumps({
-            "chat_id": chat_id,
-            "text": text,
-            "label": final_label,
-            "confidence": round(float(final_confidence), 3),
-            "mentioned": mentioned
-        }, ensure_ascii=False))
+            print(json.dumps({
+                "chat_id": chat_id,
+                "text": text,
+                "label": final_label,
+                "confidence": round(float(final_confidence), 3),
+                "mentioned": mentioned
+            }, ensure_ascii=False))
 
     except Exception as e:
         print(f"HANDLER ERROR: {e}")
