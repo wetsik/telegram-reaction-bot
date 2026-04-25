@@ -1,14 +1,9 @@
-import os
 import re
 import time
 import json
 import random
 import asyncio
 import threading
-import shutil
-import uuid
-from pathlib import Path
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from collections import defaultdict, deque
 
 import aiohttp
@@ -16,78 +11,43 @@ from telethon import TelegramClient, events, functions, types
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError
 
-# =========================================================
-# ENV
-# =========================================================
-API_ID = int(os.environ["API_ID"])
-API_HASH = os.environ["API_HASH"]
-SESSION_STRING = os.environ["SESSION_STRING"]
+from health_server import run_health_server
+from settings import (
+    API_HASH,
+    API_ID,
+    BOT_NAME,
+    BOT_NAME_HINTS,
+    BOT_STAGE,
+    BOT_VERSION,
+    ENABLE_INIT_MESSAGES,
+    ENABLE_REACTIONS,
+    ENABLE_TEXT_REPLIES,
+    HF_API_TOKEN,
+    INACTIVITY_CHECK_INTERVAL,
+    INACTIVITY_TRIGGER,
+    INIT_MESSAGE_CHANCE,
+    INIT_MIN_GAP,
+    MAX_CONTEXT,
+    MAX_DELAY,
+    MAX_REACTIONS_PER_HOUR,
+    MAX_TEXTS_PER_HOUR,
+    MENTION_REPLY_CHANCE,
+    MIN_DELAY,
+    MIN_TEXT_LEN,
+    QUIET_HOURS,
+    REACTION_CHANCE,
+    REACTION_COOLDOWN,
+    RECENT_BOT_TEXTS_LIMIT,
+    RECENT_MSGS_LIMIT,
+    SESSION_STRING,
+    TEST_INIT_PRIVATE_ONLY,
+    TEXT_COOLDOWN,
+    TEXT_REPLY_CHANCE,
+    TZ_OFFSET,
+    USE_AI_CLASSIFICATION,
+)
+from vocal_remover import handle_private_vocal_remover
 
-PORT = int(os.environ.get("PORT", "10000"))
-HF_API_TOKEN = os.environ.get("HF_API_TOKEN", "").strip()
-
-DOWNLOADS_DIR = Path("downloads")
-OUTPUTS_DIR = Path("outputs")
-SUPPORTED_MEDIA_EXTENSIONS = {".mp3", ".wav", ".m4a", ".mp4"}
-URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
-
-# твой сдвиг по времени (Узбекистан = +5)
-TZ_OFFSET = int(os.environ.get("TZ_OFFSET", "5"))
-
-# задержка перед реакцией / ответом
-MIN_DELAY = float(os.environ.get("MIN_DELAY", "0.25"))
-MAX_DELAY = float(os.environ.get("MAX_DELAY", "0.9"))
-
-# частота действий
-REACTION_CHANCE = float(os.environ.get("REACTION_CHANCE", "0.98"))
-TEXT_REPLY_CHANCE = float(os.environ.get("TEXT_REPLY_CHANCE", "0.55"))
-MENTION_REPLY_CHANCE = float(os.environ.get("MENTION_REPLY_CHANCE", "8"))
-
-# лимиты
-TEXT_COOLDOWN = int(os.environ.get("TEXT_COOLDOWN", "20"))
-REACTION_COOLDOWN = int(os.environ.get("REACTION_COOLDOWN", "0"))
-
-MAX_TEXTS_PER_HOUR = int(os.environ.get("MAX_TEXTS_PER_HOUR", "40"))
-MAX_REACTIONS_PER_HOUR = int(os.environ.get("MAX_REACTIONS_PER_HOUR", "160"))
-
-# память
-RECENT_MSGS_LIMIT = int(os.environ.get("RECENT_MSGS_LIMIT", "35"))
-RECENT_BOT_TEXTS_LIMIT = int(os.environ.get("RECENT_BOT_TEXTS_LIMIT", "12"))
-MAX_CONTEXT = int(os.environ.get("MAX_CONTEXT", "8"))
-
-# инициативные сообщения
-ENABLE_INIT_MESSAGES = os.environ.get(
-    "ENABLE_INIT_MESSAGES", "true").lower() == "true"
-
-INACTIVITY_TRIGGER = int(os.environ.get(
-    "INACTIVITY_TRIGGER", "86400"))   # 24 часа тишины
-INACTIVITY_CHECK_INTERVAL = int(os.environ.get(
-    "INACTIVITY_CHECK_INTERVAL", "600"))  # проверка раз в 10 минут
-# если сутки тишина — написать
-INIT_MESSAGE_CHANCE = float(os.environ.get("INIT_MESSAGE_CHANCE", "1.0"))
-INIT_MIN_GAP = int(os.environ.get("INIT_MIN_GAP", "604800")
-                   )  # минимум 1 неделя между сообщениями
-
-# писать инициативные сообщения только в личку
-TEST_INIT_PRIVATE_ONLY = os.environ.get(
-    "TEST_INIT_PRIVATE_ONLY", "false").lower() == "true"
-
-# AI-классификация
-USE_AI_CLASSIFICATION = os.environ.get(
-    "USE_AI_CLASSIFICATION", "true").lower() == "true"
-
-# общие
-BOT_NAME = "westik"
-BOT_VERSION = "v1.0.0"
-BOT_STAGE = "stable"
-
-ENABLE_REACTIONS = True
-ENABLE_TEXT_REPLIES = True
-MIN_TEXT_LEN = 1
-QUIET_HOURS = set()
-BOT_NAME_HINTS = ["бот", "bot"]
-
-# =========================================================
 # CLIENT
 # =========================================================
 client = TelegramClient(
@@ -95,45 +55,6 @@ client = TelegramClient(
     API_ID,
     API_HASH
 )
-
-# =========================================================
-# HEALTH SERVER
-# =========================================================
-
-
-class HealthHandler(BaseHTTPRequestHandler):
-    def _send_ok(self, body: bool = False):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain; charset=utf-8")
-        self.end_headers()
-        if body:
-            self.wfile.write(b"ok")
-
-    def do_GET(self):
-        if self.path in ("/", "/health"):
-            self._send_ok(body=True)
-        else:
-            self.send_response(404)
-            self.send_header("Content-type", "text/plain; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(b"not found")
-
-    def do_HEAD(self):
-        if self.path in ("/", "/health"):
-            self._send_ok(body=False)
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def log_message(self, format, *args):
-        return
-
-
-def run_health_server():
-    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
-    print(f"Health server started on port {PORT}")
-    server.serve_forever()
-
 
 # =========================================================
 # TIME / ACTIVITY
@@ -915,215 +836,6 @@ async def inactivity_loop():
 
 
 # =========================================================
-# PRIVATE DM VOCAL REMOVER
-# =========================================================
-def ensure_media_dirs():
-    DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def extract_first_url(text: str) -> str | None:
-    match = URL_RE.search(text or "")
-    if not match:
-        return None
-
-    return match.group(0).rstrip(").,!?\"'")
-
-
-def is_supported_media_file(path: Path) -> bool:
-    return path.suffix.lower() in SUPPORTED_MEDIA_EXTENSIONS
-
-
-async def run_command(*args: str, cwd: Path | None = None) -> tuple[int, str, str]:
-    process = await asyncio.create_subprocess_exec(
-        *args,
-        cwd=str(cwd) if cwd else None,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
-    stdout, stderr = await process.communicate()
-    return (
-        process.returncode,
-        stdout.decode("utf-8", errors="replace"),
-        stderr.decode("utf-8", errors="replace")
-    )
-
-
-async def download_telegram_media(event, job_id: str) -> Path | None:
-    ensure_media_dirs()
-    job_download_dir = DOWNLOADS_DIR / job_id
-    job_download_dir.mkdir(parents=True, exist_ok=True)
-
-    downloaded = await event.message.download_media(
-        file=str(job_download_dir)
-    )
-    if not downloaded:
-        return None
-
-    path = Path(downloaded)
-    if not is_supported_media_file(path):
-        return None
-
-    return path
-
-
-async def download_url_media(url: str, job_id: str) -> Path | None:
-    ensure_media_dirs()
-    job_download_dir = DOWNLOADS_DIR / job_id
-    job_download_dir.mkdir(parents=True, exist_ok=True)
-
-    output_template = str(job_download_dir / "%(title).80s.%(ext)s")
-    code, stdout, stderr = await run_command(
-        "yt-dlp",
-        "--no-playlist",
-        "-x",
-        "--audio-format",
-        "mp3",
-        "-f",
-        "bestaudio/best",
-        "-o",
-        output_template,
-        url
-    )
-    if code != 0:
-        print(f"yt-dlp failed: {stderr or stdout}")
-        return None
-
-    candidates = [
-        path for path in job_download_dir.iterdir()
-        if path.is_file() and is_supported_media_file(path)
-    ]
-    if not candidates:
-        print(f"yt-dlp produced no supported file for {url}")
-        return None
-
-    return max(candidates, key=lambda p: p.stat().st_mtime)
-
-
-def find_no_vocals_file(input_file: Path, job_output_dir: Path) -> Path | None:
-    search_roots = [
-        job_output_dir / "htdemucs",
-        OUTPUTS_DIR / "htdemucs",
-        Path("separated") / "htdemucs",
-    ]
-
-    preferred_track_dir = input_file.stem
-    for root in search_roots:
-        preferred = root / preferred_track_dir / "no_vocals.wav"
-        if preferred.exists():
-            return preferred
-
-        matches = list(root.glob("*/no_vocals.wav")) if root.exists() else []
-        if matches:
-            return max(matches, key=lambda p: p.stat().st_mtime)
-
-    return None
-
-
-async def separate_vocals(input_file: Path, job_id: str) -> Path | None:
-    job_output_dir = OUTPUTS_DIR / job_id
-    job_output_dir.mkdir(parents=True, exist_ok=True)
-
-    code, stdout, stderr = await run_command(
-        "demucs",
-        "-n",
-        "htdemucs",
-        "--two-stems=vocals",
-        "-o",
-        str(job_output_dir),
-        str(input_file)
-    )
-    if code != 0:
-        print(f"demucs failed: {stderr or stdout}")
-        return None
-
-    return find_no_vocals_file(input_file, job_output_dir)
-
-
-async def send_audio_result(event, audio_file: Path):
-    await client.send_file(
-        event.chat_id,
-        file=str(audio_file),
-        caption="Готово 🎧",
-        force_document=False,
-        attributes=[
-            types.DocumentAttributeAudio(
-                duration=0,
-                title="No vocals"
-            )
-        ]
-    )
-
-
-def cleanup_job_files(job_id: str, input_file: Path | None):
-    paths_to_remove = [
-        DOWNLOADS_DIR / job_id,
-        OUTPUTS_DIR / job_id,
-    ]
-
-    if input_file:
-        paths_to_remove.append(input_file)
-
-    for path in paths_to_remove:
-        try:
-            if path.is_dir():
-                shutil.rmtree(path, ignore_errors=True)
-            elif path.exists():
-                path.unlink()
-        except Exception as e:
-            print(f"Cleanup failed for {path}: {e}")
-
-
-async def handle_private_vocal_remover(event):
-    status_message = None
-    input_file = None
-    job_id = uuid.uuid4().hex
-
-    try:
-        text = event.raw_text or ""
-        url = extract_first_url(text)
-
-        if event.message.media:
-            status_message = await event.respond("⏳ Обрабатываю...")
-            input_file = await download_telegram_media(event, job_id)
-        elif url:
-            status_message = await event.respond("⏳ Обрабатываю...")
-            input_file = await download_url_media(url, job_id)
-        else:
-            return
-
-        if not input_file:
-            await event.respond("Ошибка обработки")
-            return
-
-        if status_message:
-            try:
-                await status_message.edit("⏳ Обрабатываю... Demucs запущен")
-            except Exception:
-                pass
-
-        no_vocals = await separate_vocals(input_file, job_id)
-        if not no_vocals:
-            await event.respond("Ошибка обработки")
-            return
-
-        await send_audio_result(event, no_vocals)
-
-        if status_message:
-            try:
-                await status_message.delete()
-            except Exception:
-                pass
-
-    except Exception as e:
-        print(f"PRIVATE VOCAL REMOVER ERROR: {e}")
-        await event.respond("Ошибка обработки")
-
-    finally:
-        cleanup_job_files(job_id, input_file)
-
-
-# =========================================================
 # MAIN HANDLER
 # =========================================================
 @client.on(events.NewMessage())
@@ -1135,7 +847,7 @@ async def handle_new_message(event):
         text = event.raw_text or ""
 
         if event.is_private:
-            await handle_private_vocal_remover(event)
+            await handle_private_vocal_remover(event, client)
         else:
             if event.out:
                 return

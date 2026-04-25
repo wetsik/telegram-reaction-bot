@@ -1,0 +1,464 @@
+import asyncio
+import hashlib
+import re
+import shutil
+import uuid
+from contextlib import suppress
+from datetime import datetime, timedelta
+from pathlib import Path
+
+from telethon import types
+
+from settings import (
+    DOWNLOADS_DIR,
+    OUTPUTS_DIR,
+    SUPPORTED_MEDIA_EXTENSIONS,
+    VOCAL_PROCESS_ESTIMATE_SECONDS,
+    VOCAL_PROGRESS_UPDATE_INTERVAL,
+)
+
+
+URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+PERCENT_RE = re.compile(r"(\d{1,3})%")
+RESULT_CACHE_DIR = OUTPUTS_DIR / "cache"
+
+
+def ensure_media_dirs():
+    DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    RESULT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def extract_first_url(text: str) -> str | None:
+    match = URL_RE.search(text or "")
+    if not match:
+        return None
+
+    return match.group(0).rstrip(").,!?\"'")
+
+
+def is_supported_media_file(path: Path) -> bool:
+    return path.suffix.lower() in SUPPORTED_MEDIA_EXTENSIONS
+
+
+def calculate_file_hash_sync(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+
+    return digest.hexdigest()
+
+
+async def calculate_file_hash(path: Path) -> str:
+    return await asyncio.to_thread(calculate_file_hash_sync, path)
+
+
+def get_cached_result(cache_key: str) -> Path | None:
+    cached_file = RESULT_CACHE_DIR / f"{cache_key}.wav"
+    if cached_file.exists():
+        return cached_file
+
+    return None
+
+
+async def save_cached_result(cache_key: str, no_vocals: Path) -> Path:
+    cached_file = RESULT_CACHE_DIR / f"{cache_key}.wav"
+    await asyncio.to_thread(shutil.copy2, no_vocals, cached_file)
+    return cached_file
+
+
+def format_duration(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def format_finish_time(seconds_from_now: int) -> str:
+    finish_at = datetime.now() + timedelta(seconds=max(0, int(seconds_from_now)))
+    return finish_at.strftime("%H:%M")
+
+
+def get_message_media_duration(event) -> int | None:
+    document = getattr(event.message, "document", None)
+    if not document:
+        return None
+
+    for attribute in getattr(document, "attributes", []):
+        duration = getattr(attribute, "duration", None)
+        if duration:
+            return int(duration)
+
+    return None
+
+
+def estimate_processing_seconds(event) -> int:
+    media_duration = get_message_media_duration(event)
+    if not media_duration:
+        return VOCAL_PROCESS_ESTIMATE_SECONDS
+
+    return max(
+        VOCAL_PROCESS_ESTIMATE_SECONDS,
+        min(1200, int(media_duration * 1.5))
+    )
+
+
+def build_stage_text(
+    stage: str,
+    elapsed_seconds: int = 0,
+    remaining_seconds: int | None = None,
+    percent: int | None = None,
+) -> str:
+    lines = [
+        f"⏳ {stage}",
+        f"Прошло: {format_duration(elapsed_seconds)}",
+    ]
+
+    if percent is not None:
+        lines.append(f"Прогресс: {max(0, min(100, percent))}%")
+
+    if remaining_seconds is not None and remaining_seconds > 0:
+        lines.append(f"Осталось: {format_duration(remaining_seconds)}")
+        lines.append(f"Будет готово примерно в {format_finish_time(remaining_seconds)}")
+    elif remaining_seconds is not None:
+        lines.append("Осталось: ещё немного")
+
+    return "\n".join(lines)
+
+
+class StatusReporter:
+    def __init__(self, status_message, update_interval: int = VOCAL_PROGRESS_UPDATE_INTERVAL):
+        self.status_message = status_message
+        self.update_interval = update_interval
+        self.started_at = asyncio.get_running_loop().time()
+        self.last_edit_at = 0.0
+        self.last_text = ""
+
+    def elapsed(self) -> int:
+        return int(asyncio.get_running_loop().time() - self.started_at)
+
+    async def update(
+        self,
+        stage: str,
+        remaining_seconds: int | None = None,
+        percent: int | None = None,
+        force: bool = False,
+    ):
+        now = asyncio.get_running_loop().time()
+        text = build_stage_text(stage, self.elapsed(), remaining_seconds, percent)
+
+        if not force and text == self.last_text:
+            return
+
+        if not force and now - self.last_edit_at < self.update_interval:
+            return
+
+        try:
+            await self.status_message.edit(text)
+            self.last_edit_at = now
+            self.last_text = text
+        except Exception as e:
+            print(f"Status update failed: {e}")
+
+
+async def run_estimated_progress(reporter: StatusReporter, stage: str, estimate_seconds: int):
+    while True:
+        elapsed_seconds = reporter.elapsed()
+        remaining_seconds = max(0, estimate_seconds - elapsed_seconds)
+        percent = min(99, int(elapsed_seconds / estimate_seconds * 100)) if estimate_seconds else None
+        await reporter.update(stage, remaining_seconds, percent, force=True)
+        await asyncio.sleep(VOCAL_PROGRESS_UPDATE_INTERVAL)
+
+
+def estimate_remaining_from_percent(elapsed_seconds: int, percent: int) -> int | None:
+    if percent <= 0:
+        return None
+
+    total_estimate = elapsed_seconds / (percent / 100)
+    return max(0, int(total_estimate - elapsed_seconds))
+
+
+def parse_demucs_percent(text: str) -> int | None:
+    matches = PERCENT_RE.findall(text)
+    if not matches:
+        return None
+
+    value = max(int(match) for match in matches)
+    if 0 <= value <= 100:
+        return value
+
+    return None
+
+async def run_command(*args: str, cwd: Path | None = None) -> tuple[int, str, str]:
+    process = await asyncio.create_subprocess_exec(
+        *args,
+        cwd=str(cwd) if cwd else None,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = await process.communicate()
+    return (
+        process.returncode,
+        stdout.decode("utf-8", errors="replace"),
+        stderr.decode("utf-8", errors="replace")
+    )
+
+
+async def download_telegram_media(event, job_id: str, reporter: StatusReporter | None = None) -> Path | None:
+    ensure_media_dirs()
+    job_download_dir = DOWNLOADS_DIR / job_id
+    job_download_dir.mkdir(parents=True, exist_ok=True)
+
+    def progress_callback(current: int, total: int):
+        if not reporter or not total:
+            return
+
+        percent = min(99, int(current / total * 100))
+        remaining = None
+        if current > 0:
+            elapsed = max(1, reporter.elapsed())
+            total_estimate = elapsed / (current / total)
+            remaining = max(0, int(total_estimate - elapsed))
+
+        asyncio.create_task(
+            reporter.update("Скачиваю файл", remaining, percent)
+        )
+
+    downloaded = await event.message.download_media(
+        file=str(job_download_dir),
+        progress_callback=progress_callback
+    )
+    if not downloaded:
+        return None
+
+    path = Path(downloaded)
+    if not is_supported_media_file(path):
+        return None
+
+    return path
+
+
+async def download_url_media(url: str, job_id: str, reporter: StatusReporter | None = None) -> Path | None:
+    ensure_media_dirs()
+    job_download_dir = DOWNLOADS_DIR / job_id
+    job_download_dir.mkdir(parents=True, exist_ok=True)
+
+    if reporter:
+        await reporter.update("Скачиваю по ссылке", force=True)
+
+    output_template = str(job_download_dir / "%(title).80s.%(ext)s")
+    code, stdout, stderr = await run_command(
+        "yt-dlp",
+        "--no-playlist",
+        "-f",
+        "bestaudio[ext=m4a]/bestaudio/best",
+        "-o",
+        output_template,
+        url
+    )
+    if code != 0:
+        print(f"yt-dlp failed: {stderr or stdout}")
+        return None
+
+    candidates = [
+        path for path in job_download_dir.iterdir()
+        if path.is_file() and is_supported_media_file(path)
+    ]
+    if not candidates:
+        print(f"yt-dlp produced no supported file for {url}")
+        return None
+
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def find_no_vocals_file(input_file: Path, job_output_dir: Path) -> Path | None:
+    search_roots = [
+        job_output_dir / "htdemucs",
+        OUTPUTS_DIR / "htdemucs",
+        Path("separated") / "htdemucs",
+    ]
+
+    preferred_track_dir = input_file.stem
+    for root in search_roots:
+        preferred = root / preferred_track_dir / "no_vocals.wav"
+        if preferred.exists():
+            return preferred
+
+        matches = list(root.glob("*/no_vocals.wav")) if root.exists() else []
+        if matches:
+            return max(matches, key=lambda p: p.stat().st_mtime)
+
+    return None
+
+
+async def read_demucs_stream(stream, reporter: StatusReporter | None, log_parts: list[str]):
+    while True:
+        chunk = await stream.read(4096)
+        if not chunk:
+            break
+
+        text = chunk.decode("utf-8", errors="replace")
+        log_parts.append(text)
+
+        if not reporter:
+            continue
+
+        percent = parse_demucs_percent(text)
+        if percent is None:
+            continue
+
+        remaining = estimate_remaining_from_percent(reporter.elapsed(), percent)
+        await reporter.update("Разделяю вокал", remaining, percent, force=True)
+
+
+async def separate_vocals(input_file: Path, job_id: str, reporter: StatusReporter | None = None) -> Path | None:
+    job_output_dir = OUTPUTS_DIR / job_id
+    job_output_dir.mkdir(parents=True, exist_ok=True)
+
+    if reporter:
+        await reporter.update("Разделяю вокал", force=True)
+
+    process = await asyncio.create_subprocess_exec(
+        "demucs",
+        "-n",
+        "htdemucs",
+        "--two-stems=vocals",
+        "-o",
+        str(job_output_dir),
+        str(input_file),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+
+    stdout_parts: list[str] = []
+    stderr_parts: list[str] = []
+    await asyncio.gather(
+        read_demucs_stream(process.stdout, reporter, stdout_parts),
+        read_demucs_stream(process.stderr, reporter, stderr_parts),
+    )
+    code = await process.wait()
+
+    if code != 0:
+        stdout = "".join(stdout_parts)
+        stderr = "".join(stderr_parts)
+        print(f"demucs failed: {stderr or stdout}")
+        return None
+
+    return find_no_vocals_file(input_file, job_output_dir)
+
+
+async def send_audio_result(client, event, audio_file: Path):
+    await client.send_file(
+        event.chat_id,
+        file=str(audio_file),
+        caption="Готово 🎧",
+        force_document=False,
+        attributes=[
+            types.DocumentAttributeAudio(
+                duration=0,
+                title="No vocals"
+            )
+        ]
+    )
+
+
+def cleanup_job_files(job_id: str, input_file: Path | None):
+    paths_to_remove = [
+        DOWNLOADS_DIR / job_id,
+        OUTPUTS_DIR / job_id,
+    ]
+
+    if input_file:
+        paths_to_remove.append(input_file)
+
+    for path in paths_to_remove:
+        try:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            elif path.exists():
+                path.unlink()
+        except Exception as e:
+            print(f"Cleanup failed for {path}: {e}")
+
+
+async def handle_private_vocal_remover(event, client):
+    status_message = None
+    input_file = None
+    reporter = None
+    estimated_task = None
+    job_id = uuid.uuid4().hex
+
+    try:
+        text = event.raw_text or ""
+        url = extract_first_url(text)
+
+        if event.message.media:
+            status_message = await event.respond("⏳ Обрабатываю...")
+            reporter = StatusReporter(status_message)
+            await reporter.update("Скачиваю файл", force=True)
+            input_file = await download_telegram_media(event, job_id, reporter)
+        elif url:
+            status_message = await event.respond("⏳ Обрабатываю...")
+            reporter = StatusReporter(status_message)
+            input_file = await download_url_media(url, job_id, reporter)
+        else:
+            return
+
+        if not input_file:
+            await event.respond("Ошибка обработки")
+            return
+
+        cache_key = await calculate_file_hash(input_file)
+        cached_result = get_cached_result(cache_key)
+        if cached_result:
+            if reporter:
+                await reporter.update("Нашёл готовый результат в кэше", percent=100, force=True)
+            await send_audio_result(client, event, cached_result)
+            return
+
+        if reporter:
+            estimate_seconds = estimate_processing_seconds(event)
+            await reporter.update("Разделяю вокал", estimate_seconds, force=True)
+            estimated_task = asyncio.create_task(
+                run_estimated_progress(reporter, "Разделяю вокал", estimate_seconds)
+            )
+
+        no_vocals = await separate_vocals(input_file, job_id, reporter)
+        if estimated_task:
+            estimated_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await estimated_task
+
+        if not no_vocals:
+            await event.respond("Ошибка обработки")
+            return
+
+        no_vocals = await save_cached_result(cache_key, no_vocals)
+
+        if reporter:
+            await reporter.update("Отправляю результат", percent=100, force=True)
+
+        await send_audio_result(client, event, no_vocals)
+
+        if status_message:
+            try:
+                await status_message.delete()
+            except Exception:
+                pass
+
+    except Exception as e:
+        print(f"PRIVATE VOCAL REMOVER ERROR: {e}")
+        await event.respond("Ошибка обработки")
+
+    finally:
+        if estimated_task and not estimated_task.done():
+            estimated_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await estimated_task
+
+        cleanup_job_files(job_id, input_file)
