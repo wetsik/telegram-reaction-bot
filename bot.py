@@ -1096,6 +1096,12 @@ async def handle_private_vocal_remover(event):
             await event.respond("Ошибка обработки")
             return
 
+        if status_message:
+            try:
+                await status_message.edit("⏳ Обрабатываю... Demucs запущен")
+            except Exception:
+                pass
+
         no_vocals = await separate_vocals(input_file, job_id)
         if not no_vocals:
             await event.respond("Ошибка обработки")
@@ -1120,25 +1126,26 @@ async def handle_private_vocal_remover(event):
 # =========================================================
 # MAIN HANDLER
 # =========================================================
-@client.on(events.NewMessage(incoming=True))
+@client.on(events.NewMessage())
 async def handle_new_message(event):
     try:
         if not event.message:
             return
 
-        if event.out:
-            return
-
         text = event.raw_text or ""
-        sender = await event.get_sender()
-        me = await client.get_me()
-
-        if sender and me and getattr(sender, "id", None) == me.id:
-            return
 
         if event.is_private:
             await handle_private_vocal_remover(event)
         else:
+            if event.out:
+                return
+
+            sender = await event.get_sender()
+            me = await client.get_me()
+
+            if sender and me and getattr(sender, "id", None) == me.id:
+                return
+
             if not text.strip():
                 return
 
