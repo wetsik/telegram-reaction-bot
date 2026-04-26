@@ -44,13 +44,14 @@ async def handle_new_message(event):
         if not event.message:
             return
 
+        if event.is_private:
+            await handle_private_vocal_remover(event, client)
+            return
+
         if event.out:
             return
 
-        if event.is_private:
-            await handle_private_vocal_remover(event, client)
-        else:
-            await handle_group_message(event)
+        await handle_group_message(event)
 
     except Exception as e:
         print(f"HANDLER ERROR: {e}")

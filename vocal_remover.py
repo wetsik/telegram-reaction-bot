@@ -504,6 +504,26 @@ async def report_vocal_error(event, reporter: StatusReporter | None, user_messag
     await event.respond(user_message)
 
 
+def is_internal_status_message(text: str, has_media: bool) -> bool:
+    if has_media:
+        return False
+
+    normalized = (text or "").strip().lower()
+    if not normalized:
+        return False
+
+    return normalized.startswith((
+        "⏳ ",
+        "ошибка",
+        "готово",
+        "старт:",
+        "скачиваю",
+        "разделяю",
+        "отправляю",
+        "нашёл",
+    ))
+
+
 async def handle_private_vocal_remover(event, client):
     status_message = None
     input_file = None
@@ -515,6 +535,9 @@ async def handle_private_vocal_remover(event, client):
     try:
         text = event.raw_text or ""
         url = extract_first_url(text)
+
+        if event.out and is_internal_status_message(text, bool(event.message.media)):
+            return
 
         if event.message.media:
             status_message = await event.respond("⏳ Старт: файл получен")
