@@ -1,4 +1,5 @@
 import asyncio
+import codecs
 import hashlib
 import re
 import shutil
@@ -15,6 +16,8 @@ from settings import (
     SUPPORTED_MEDIA_EXTENSIONS,
     VOCAL_PROCESS_ESTIMATE_SECONDS,
     VOCAL_PROGRESS_UPDATE_INTERVAL,
+    VOCAL_SEND_TIMEOUT_SECONDS,
+    VOCAL_SEPARATION_TIMEOUT_SECONDS,
 )
 
 
@@ -55,16 +58,17 @@ async def calculate_file_hash(path: Path) -> str:
 
 
 def get_cached_result(cache_key: str) -> Path | None:
-    cached_file = RESULT_CACHE_DIR / f"{cache_key}.wav"
-    if cached_file.exists():
-        return cached_file
+    for suffix in (".mp3", ".wav"):
+        cached_file = RESULT_CACHE_DIR / f"{cache_key}{suffix}"
+        if cached_file.exists():
+            return cached_file
 
     return None
 
 
-async def save_cached_result(cache_key: str, no_vocals: Path) -> Path:
-    cached_file = RESULT_CACHE_DIR / f"{cache_key}.wav"
-    await asyncio.to_thread(shutil.copy2, no_vocals, cached_file)
+async def save_cached_result(cache_key: str, result_file: Path) -> Path:
+    cached_file = RESULT_CACHE_DIR / f"{cache_key}{result_file.suffix.lower()}"
+    await asyncio.to_thread(shutil.copy2, result_file, cached_file)
     return cached_file
 
 
@@ -113,6 +117,7 @@ def build_stage_text(
     elapsed_seconds: int = 0,
     remaining_seconds: int | None = None,
     percent: int | None = None,
+    estimated: bool = False,
 ) -> str:
     lines = [
         f"⏳ {stage}",
@@ -120,10 +125,12 @@ def build_stage_text(
     ]
 
     if percent is not None:
-        lines.append(f"Прогресс: {max(0, min(100, percent))}%")
+        label = "Примерный прогресс" if estimated else "Прогресс"
+        lines.append(f"{label}: {max(0, min(100, percent))}%")
 
     if remaining_seconds is not None and remaining_seconds > 0:
-        lines.append(f"Осталось: {format_duration(remaining_seconds)}")
+        label = "Примерно осталось" if estimated else "Осталось"
+        lines.append(f"{label}: {format_duration(remaining_seconds)}")
         lines.append(f"Будет готово примерно в {format_finish_time(remaining_seconds)}")
     elif remaining_seconds is not None:
         lines.append("Осталось: ещё немного")
@@ -138,6 +145,7 @@ class StatusReporter:
         self.started_at = asyncio.get_running_loop().time()
         self.last_edit_at = 0.0
         self.last_text = ""
+        self.actual_progress_stages: set[str] = set()
 
     def elapsed(self) -> int:
         return int(asyncio.get_running_loop().time() - self.started_at)
@@ -147,10 +155,20 @@ class StatusReporter:
         stage: str,
         remaining_seconds: int | None = None,
         percent: int | None = None,
+        estimated: bool = False,
         force: bool = False,
     ):
         now = asyncio.get_running_loop().time()
-        text = build_stage_text(stage, self.elapsed(), remaining_seconds, percent)
+        if percent is not None and not estimated:
+            self.actual_progress_stages.add(stage)
+
+        text = build_stage_text(
+            stage,
+            self.elapsed(),
+            remaining_seconds,
+            percent,
+            estimated,
+        )
 
         if not force and text == self.last_text:
             return
@@ -165,13 +183,19 @@ class StatusReporter:
         except Exception as e:
             print(f"Status update failed: {e}")
 
+    def has_actual_progress(self, stage: str) -> bool:
+        return stage in self.actual_progress_stages
+
 
 async def run_estimated_progress(reporter: StatusReporter, stage: str, estimate_seconds: int):
     while True:
+        if reporter.has_actual_progress(stage):
+            return
+
         elapsed_seconds = reporter.elapsed()
         remaining_seconds = max(0, estimate_seconds - elapsed_seconds)
         percent = min(99, int(elapsed_seconds / estimate_seconds * 100)) if estimate_seconds else None
-        await reporter.update(stage, remaining_seconds, percent, force=True)
+        await reporter.update(stage, remaining_seconds, percent, estimated=True, force=True)
         await asyncio.sleep(VOCAL_PROGRESS_UPDATE_INTERVAL)
 
 
@@ -193,6 +217,34 @@ def parse_demucs_percent(text: str) -> int | None:
         return value
 
     return None
+
+
+async def convert_wav_to_mp3(wav_file: Path, job_id: str, reporter: StatusReporter | None = None) -> Path:
+    if wav_file.suffix.lower() != ".wav" or not shutil.which("ffmpeg"):
+        return wav_file
+
+    output_file = OUTPUTS_DIR / job_id / f"{wav_file.stem}.mp3"
+
+    if reporter:
+        await reporter.update("Сжимаю результат", force=True)
+
+    code, stdout, stderr = await run_command(
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(wav_file),
+        "-vn",
+        "-codec:a",
+        "libmp3lame",
+        "-b:a",
+        "192k",
+        str(output_file),
+    )
+    if code != 0 or not output_file.exists():
+        print(f"ffmpeg mp3 conversion failed: {stderr or stdout}")
+        return wav_file
+
+    return output_file
 
 async def run_command(*args: str, cwd: Path | None = None) -> tuple[int, str, str]:
     process = await asyncio.create_subprocess_exec(
@@ -297,23 +349,39 @@ def find_no_vocals_file(input_file: Path, job_output_dir: Path) -> Path | None:
 
 
 async def read_demucs_stream(stream, reporter: StatusReporter | None, log_parts: list[str]):
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    recent_text = ""
+    last_percent = None
+
     while True:
-        chunk = await stream.read(4096)
+        chunk = await stream.read(128)
         if not chunk:
             break
 
-        text = chunk.decode("utf-8", errors="replace")
+        text = decoder.decode(chunk)
         log_parts.append(text)
 
         if not reporter:
             continue
 
-        percent = parse_demucs_percent(text)
-        if percent is None:
+        recent_text = (recent_text + text)[-1000:]
+        percent = parse_demucs_percent(recent_text)
+        if percent is None or percent == last_percent:
             continue
 
+        last_percent = percent
         remaining = estimate_remaining_from_percent(reporter.elapsed(), percent)
-        await reporter.update("Разделяю вокал", remaining, percent, force=True)
+        is_first_actual_progress = not reporter.has_actual_progress("Разделяю вокал")
+        await reporter.update(
+            "Разделяю вокал",
+            remaining,
+            percent,
+            force=is_first_actual_progress or percent >= 100,
+        )
+
+    tail = decoder.decode(b"", final=True)
+    if tail:
+        log_parts.append(tail)
 
 
 async def separate_vocals(input_file: Path, job_id: str, reporter: StatusReporter | None = None) -> Path | None:
@@ -337,11 +405,17 @@ async def separate_vocals(input_file: Path, job_id: str, reporter: StatusReporte
 
     stdout_parts: list[str] = []
     stderr_parts: list[str] = []
-    await asyncio.gather(
-        read_demucs_stream(process.stdout, reporter, stdout_parts),
-        read_demucs_stream(process.stderr, reporter, stderr_parts),
-    )
-    code = await process.wait()
+    try:
+        await asyncio.gather(
+            read_demucs_stream(process.stdout, reporter, stdout_parts),
+            read_demucs_stream(process.stderr, reporter, stderr_parts),
+        )
+        code = await process.wait()
+    except asyncio.CancelledError:
+        process.kill()
+        with suppress(Exception):
+            await process.wait()
+        raise
 
     if code != 0:
         stdout = "".join(stdout_parts)
@@ -352,12 +426,28 @@ async def separate_vocals(input_file: Path, job_id: str, reporter: StatusReporte
     return find_no_vocals_file(input_file, job_output_dir)
 
 
-async def send_audio_result(client, event, audio_file: Path):
+async def send_audio_result(client, event, audio_file: Path, reporter: StatusReporter | None = None):
+    def progress_callback(current: int, total: int):
+        if not reporter or not total:
+            return
+
+        percent = min(99, int(current / total * 100))
+        remaining = None
+        if current > 0:
+            elapsed = max(1, reporter.elapsed())
+            total_estimate = elapsed / (current / total)
+            remaining = max(0, int(total_estimate - elapsed))
+
+        asyncio.create_task(
+            reporter.update("Отправляю результат", remaining, percent)
+        )
+
     await client.send_file(
         event.chat_id,
         file=str(audio_file),
         caption="Готово 🎧",
         force_document=False,
+        progress_callback=progress_callback,
         attributes=[
             types.DocumentAttributeAudio(
                 duration=0,
@@ -418,17 +508,32 @@ async def handle_private_vocal_remover(event, client):
         if cached_result:
             if reporter:
                 await reporter.update("Нашёл готовый результат в кэше", percent=100, force=True)
-            await send_audio_result(client, event, cached_result)
+            try:
+                await asyncio.wait_for(
+                    send_audio_result(client, event, cached_result, reporter),
+                    timeout=VOCAL_SEND_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                await event.respond("Файл найден в кэше, но Telegram слишком долго не принимал загрузку. Попробуй ещё раз.")
+                return
             return
 
         if reporter:
             estimate_seconds = estimate_processing_seconds(event)
-            await reporter.update("Разделяю вокал", estimate_seconds, force=True)
+            await reporter.update("Разделяю вокал", estimate_seconds, estimated=True, force=True)
             estimated_task = asyncio.create_task(
                 run_estimated_progress(reporter, "Разделяю вокал", estimate_seconds)
             )
 
-        no_vocals = await separate_vocals(input_file, job_id, reporter)
+        try:
+            no_vocals = await asyncio.wait_for(
+                separate_vocals(input_file, job_id, reporter),
+                timeout=VOCAL_SEPARATION_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            await event.respond("Обработка слишком долго не завершалась. Попробуй файл покороче или с меньшим размером.")
+            return
+
         if estimated_task:
             estimated_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -438,12 +543,23 @@ async def handle_private_vocal_remover(event, client):
             await event.respond("Ошибка обработки")
             return
 
-        no_vocals = await save_cached_result(cache_key, no_vocals)
+        result_file = await convert_wav_to_mp3(no_vocals, job_id, reporter)
+        result_file = await save_cached_result(cache_key, result_file)
 
         if reporter:
-            await reporter.update("Отправляю результат", percent=100, force=True)
+            await reporter.update("Отправляю результат", force=True)
 
-        await send_audio_result(client, event, no_vocals)
+        try:
+            await asyncio.wait_for(
+                send_audio_result(client, event, result_file, reporter),
+                timeout=VOCAL_SEND_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            await event.respond("Файл готов, но Telegram слишком долго не принимал загрузку. Попробуй ещё раз или отправь файл поменьше.")
+            return
+
+        if reporter:
+            await reporter.update("Отправил результат", percent=100, force=True)
 
         if status_message:
             try:
