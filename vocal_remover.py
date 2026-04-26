@@ -88,6 +88,13 @@ def format_finish_time(seconds_from_now: int) -> str:
     return finish_at.strftime("%H:%M")
 
 
+def build_progress_bar(percent: int, width: int = 12) -> str:
+    percent = max(0, min(100, int(percent)))
+    filled = round(width * percent / 100)
+    empty = width - filled
+    return f"[{'█' * filled}{'░' * empty}]"
+
+
 def get_message_media_duration(event) -> int | None:
     document = getattr(event.message, "document", None)
     if not document:
@@ -121,17 +128,18 @@ def build_stage_text(
 ) -> str:
     lines = [
         f"⏳ {stage}",
-        f"Прошло: {format_duration(elapsed_seconds)}",
+        f"Время: {format_duration(elapsed_seconds)}",
     ]
 
     if percent is not None:
         label = "Примерный прогресс" if estimated else "Прогресс"
-        lines.append(f"{label}: {max(0, min(100, percent))}%")
+        clamped = max(0, min(100, percent))
+        lines.append(f"{label}: {build_progress_bar(clamped)} {clamped}%")
 
     if remaining_seconds is not None and remaining_seconds > 0:
         label = "Примерно осталось" if estimated else "Осталось"
         lines.append(f"{label}: {format_duration(remaining_seconds)}")
-        lines.append(f"Будет готово примерно в {format_finish_time(remaining_seconds)}")
+        lines.append(f"Готово примерно в {format_finish_time(remaining_seconds)}")
     elif remaining_seconds is not None:
         lines.append("Осталось: ещё немного")
 
@@ -488,13 +496,14 @@ async def handle_private_vocal_remover(event, client):
         url = extract_first_url(text)
 
         if event.message.media:
-            status_message = await event.respond("⏳ Обрабатываю...")
+            status_message = await event.respond("⏳ Старт: файл получен")
             reporter = StatusReporter(status_message)
             await reporter.update("Скачиваю файл", force=True)
             input_file = await download_telegram_media(event, job_id, reporter)
         elif url:
-            status_message = await event.respond("⏳ Обрабатываю...")
+            status_message = await event.respond("⏳ Старт: ссылка получена")
             reporter = StatusReporter(status_message)
+            await reporter.update("Скачиваю по ссылке", force=True)
             input_file = await download_url_media(url, job_id, reporter)
         else:
             return
@@ -514,7 +523,7 @@ async def handle_private_vocal_remover(event, client):
                     timeout=VOCAL_SEND_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
-                await event.respond("Файл найден в кэше, но Telegram слишком долго не принимал загрузку. Попробуй ещё раз.")
+                await event.respond("Файл найден в кэше, но Telegram слишком долго принимал загрузку. Попробуй ещё раз.")
                 return
             return
 
@@ -531,7 +540,7 @@ async def handle_private_vocal_remover(event, client):
                 timeout=VOCAL_SEPARATION_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
-            await event.respond("Обработка слишком долго не завершалась. Попробуй файл покороче или с меньшим размером.")
+            await event.respond("Обработка слишком долго не завершалась. Попробуй файл покороче или меньшего размера.")
             return
 
         if estimated_task:
@@ -547,7 +556,7 @@ async def handle_private_vocal_remover(event, client):
         result_file = await save_cached_result(cache_key, result_file)
 
         if reporter:
-            await reporter.update("Отправляю результат", force=True)
+            await reporter.update("Отправляю готовый файл", force=True)
 
         try:
             await asyncio.wait_for(
@@ -555,11 +564,11 @@ async def handle_private_vocal_remover(event, client):
                 timeout=VOCAL_SEND_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
-            await event.respond("Файл готов, но Telegram слишком долго не принимал загрузку. Попробуй ещё раз или отправь файл поменьше.")
+            await event.respond("Файл готов, но Telegram слишком долго принимал загрузку. Попробуй ещё раз или отправь файл поменьше.")
             return
 
         if reporter:
-            await reporter.update("Отправил результат", percent=100, force=True)
+            await reporter.update("Готово, файл отправлен", percent=100, force=True)
 
         if status_message:
             try:

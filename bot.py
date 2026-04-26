@@ -44,6 +44,9 @@ async def handle_new_message(event):
         if not event.message:
             return
 
+        if event.out:
+            return
+
         if event.is_private:
             await handle_private_vocal_remover(event, client)
         else:
