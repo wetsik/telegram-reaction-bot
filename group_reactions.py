@@ -59,6 +59,92 @@ from time_utils import get_activity_multiplier, get_local_hour
 
 client = None
 
+# Each chat gets a random reaction budget per message window.
+# This keeps the bot lively without letting reactions become spammy.
+# Most windows get 1-2 reactions, some get none, and only rare lively windows get 3-4.
+REACTION_WINDOW_SIZE = 60
+REACTION_BUDGET_WEIGHTS = ((0, 0.12), (1, 0.52), (2, 0.25), (3, 0.09), (4, 0.02))
+REACTION_MIN_MESSAGES_GAP = 8
+REACTION_MIN_TEXT_LEN = 4
+REACTION_LABEL_CHANCE = {
+    "funny": 0.95,
+    "shock": 0.90,
+    "hype": 0.86,
+    "love": 0.80,
+    "agreement": 0.55,
+    "sad": 0.48,
+    "anger": 0.38,
+    "disagreement": 0.34,
+    "question": 0.28,
+    "greeting": 0.22,
+    "neutral": 0.08,
+}
+reaction_windows = {}
+
+
+def _pick_reaction_budget() -> int:
+    budgets, weights = zip(*REACTION_BUDGET_WEIGHTS)
+    return random.choices(budgets, weights=weights, k=1)[0]
+
+
+def _pick_reaction_slots(budget: int) -> list[int]:
+    if budget <= 0:
+        return []
+
+    return sorted(random.sample(range(1, REACTION_WINDOW_SIZE + 1), budget))
+
+
+def _new_reaction_window() -> dict:
+    budget = _pick_reaction_budget()
+    return {
+        "messages": 0,
+        "sent": 0,
+        "budget": budget,
+        "slots": _pick_reaction_slots(budget),
+        "last_sent_at_message": -REACTION_MIN_MESSAGES_GAP,
+    }
+
+
+def _advance_reaction_window(chat_id: int) -> dict:
+    window = reaction_windows.setdefault(chat_id, _new_reaction_window())
+
+    if window["messages"] >= REACTION_WINDOW_SIZE:
+        window = _new_reaction_window()
+        reaction_windows[chat_id] = window
+
+    window["messages"] += 1
+    return window
+
+
+def _reaction_fit_score(text: str, label: str, confidence: float, mentioned: bool) -> float:
+    stripped = text.strip()
+    if len(stripped) < REACTION_MIN_TEXT_LEN:
+        return 0.0
+
+    word_count = len(stripped.split())
+    if word_count <= 1 and len(stripped) < 7:
+        return 0.0
+
+    base = REACTION_LABEL_CHANCE.get(label, REACTION_LABEL_CHANCE["neutral"])
+
+    if label == "neutral" and confidence <= 1.0 and len(stripped) < 25:
+        return 0.0
+
+    if confidence >= 1.4:
+        base += 0.10
+    elif confidence < 1.0:
+        base *= 0.65
+
+    if 8 <= len(stripped) <= 140:
+        base += 0.05
+    elif len(stripped) > 280:
+        base *= 0.75
+
+    if mentioned:
+        base *= 0.65
+
+    return max(0.0, min(base, 1.0))
+
 
 def configure_group_services(telegram_client):
     global client
@@ -134,12 +220,33 @@ def is_greeting_for_bot(text: str, mentioned: bool) -> bool:
     return any(word in t for word in GREETING_WORDS)
 
 
-def should_send_reaction(chat_id: int, text: str) -> bool:
+def should_send_reaction(
+    chat_id: int,
+    text: str,
+    label: str,
+    confidence: float,
+    mentioned: bool,
+) -> bool:
     now = int(time.time())
     hour = get_local_hour()
     refresh_hour_bucket(chat_id)
 
     state = chat_state[chat_id]
+
+    if len(text.strip()) < 1:
+        return False
+
+    window = _advance_reaction_window(chat_id)
+
+    if window["sent"] >= window["budget"]:
+        return False
+
+    if window["messages"] - window["last_sent_at_message"] < REACTION_MIN_MESSAGES_GAP:
+        return False
+
+    next_slot = window["slots"][window["sent"]]
+    if window["messages"] < next_slot:
+        return False
 
     if now - state["last_reaction_at"] < REACTION_COOLDOWN:
         return False
@@ -147,12 +254,13 @@ def should_send_reaction(chat_id: int, text: str) -> bool:
     if state["reactions_in_last_hour"] >= MAX_REACTIONS_PER_HOUR:
         return False
 
-    if len(text.strip()) < 1:
+    fit_score = _reaction_fit_score(text, label, confidence, mentioned)
+    if fit_score <= 0:
         return False
 
-    chance = REACTION_CHANCE + recent_activity_bonus(chat_id)
+    chance = REACTION_CHANCE * fit_score
+    chance += recent_activity_bonus(chat_id)
 
-    # живой режим: ночью чуть менее активен
     chance *= (0.65 + 0.35 * get_activity_multiplier(hour))
 
     return random.random() < min(chance, 1.0)
@@ -186,7 +294,6 @@ def should_send_text(chat_id: int, text: str, mentioned: bool, label: str) -> bo
 
     chance += recent_activity_bonus(chat_id)
 
-    # живой режим: текст ночью заметно реже
     chance *= (0.75 + 0.25 * get_activity_multiplier(hour))
 
     return random.random() < min(chance, 1.0)
@@ -218,15 +325,17 @@ def build_reaction_candidates(chat_id: int, label: str, preferred_emoji: str | N
 
     category_pool = REACTIONS.get(label, REACTIONS["neutral"])
 
-    allowed_category = [
-        e for e in category_pool if e in allowed and e not in blocked]
-    unknown_category = [
-        e for e in category_pool if e not in allowed and e not in blocked]
+    allowed_category = [e for e in category_pool if e in allowed and e not in blocked]
+    unknown_category = [e for e in category_pool if e not in allowed and e not in blocked]
 
     allowed_fallback = [
-        e for e in SAFE_EMOJIS if e in allowed and e not in blocked and e not in allowed_category]
+        e for e in SAFE_EMOJIS
+        if e in allowed and e not in blocked and e not in allowed_category
+    ]
     unknown_fallback = [
-        e for e in SAFE_EMOJIS if e not in allowed and e not in blocked and e not in unknown_category]
+        e for e in SAFE_EMOJIS
+        if e not in allowed and e not in blocked and e not in unknown_category
+    ]
 
     random.shuffle(allowed_category)
     random.shuffle(unknown_category)
@@ -238,19 +347,7 @@ def build_reaction_candidates(chat_id: int, label: str, preferred_emoji: str | N
     if preferred_emoji and preferred_emoji not in blocked:
         candidates.append(preferred_emoji)
 
-    for emoji in unknown_category:
-        if emoji not in candidates:
-            candidates.append(emoji)
-
-    for emoji in allowed_category:
-        if emoji not in candidates:
-            candidates.append(emoji)
-
-    for emoji in unknown_fallback:
-        if emoji not in candidates:
-            candidates.append(emoji)
-
-    for emoji in allowed_fallback:
+    for emoji in unknown_category + allowed_category + unknown_fallback + allowed_fallback:
         if emoji not in candidates:
             candidates.append(emoji)
 
@@ -266,10 +363,8 @@ def pick_reaction_by_label(chat_id: int, label: str) -> str:
     allowed = memory["allowed"]
     blocked = memory["blocked"]
 
-    allowed_category = [
-        e for e in category_pool if e in allowed and e not in blocked]
-    unknown_category = [
-        e for e in category_pool if e not in allowed and e not in blocked]
+    allowed_category = [e for e in category_pool if e in allowed and e not in blocked]
+    unknown_category = [e for e in category_pool if e not in allowed and e not in blocked]
 
     if unknown_category and random.random() < 0.80:
         return pick_from_pool_avoiding_repeat(chat_id, unknown_category, last_used_reaction)
@@ -316,8 +411,16 @@ async def send_reaction(event, emoji: str, label: str):
 
                 memory["allowed"].add(candidate)
                 mark_reaction_sent(chat_id)
+
+                window = reaction_windows.setdefault(chat_id, _new_reaction_window())
+                window["sent"] += 1
+                window["last_sent_at_message"] = window["messages"]
+
                 print(
-                    f"Reacted {candidate} to message {event.id} in chat {chat_id}")
+                    f"Reacted {candidate} to message {event.id} in chat {chat_id} | "
+                    f"reaction_window={window['sent']}/{window['budget']} | "
+                    f"message_in_window={window['messages']}/{REACTION_WINDOW_SIZE}"
+                )
                 return
 
             except FloodWaitError:
@@ -325,12 +428,10 @@ async def send_reaction(event, emoji: str, label: str):
 
             except Exception as inner_error:
                 memory["blocked"].add(candidate)
-                print(
-                    f"Reaction {candidate} failed in chat {chat_id}: {inner_error}")
+                print(f"Reaction {candidate} failed in chat {chat_id}: {inner_error}")
                 continue
 
-        print(
-            f"Skipping reaction for message {event.id} in chat {chat_id}: no valid emoji worked")
+        print(f"Skipping reaction for message {event.id} in chat {chat_id}: no valid emoji worked")
 
     except FloodWaitError as e:
         print(f"FloodWait on reaction: sleeping for {e.seconds} seconds")
@@ -386,7 +487,6 @@ async def inactivity_loop():
             activity_multiplier = get_activity_multiplier(hour)
 
             for chat_id, last_time in list(last_message_time.items()):
-                # только личка для теста
                 if TEST_INIT_PRIVATE_ONLY and chat_id < 0:
                     continue
 
@@ -415,9 +515,6 @@ async def inactivity_loop():
 
         except Exception as e:
             print("Inactivity loop error:", e)
-
-
-# =========================================================
 
 
 async def handle_group_message(event):
@@ -480,7 +577,13 @@ async def handle_group_message(event):
                 final_label = ai_label
                 final_confidence = ai_score
 
-    if ENABLE_REACTIONS and should_send_reaction(chat_id, text):
+    if ENABLE_REACTIONS and should_send_reaction(
+        chat_id,
+        text,
+        final_label,
+        float(final_confidence),
+        mentioned,
+    ):
         emoji = pick_reaction_by_label(chat_id, final_label)
         await send_reaction(event, emoji, final_label)
 
@@ -494,6 +597,7 @@ async def handle_group_message(event):
         "label": final_label,
         "confidence": round(float(final_confidence), 3),
         "mentioned": mentioned,
+        "reaction_window": reaction_windows.get(chat_id),
     }, ensure_ascii=False))
 
 
@@ -502,4 +606,3 @@ def maybe_start_inactivity_loop(current_task):
         return asyncio.create_task(inactivity_loop())
 
     return current_task
-
