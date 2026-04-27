@@ -14,6 +14,7 @@ from telethon import types
 from settings import (
     DOWNLOADS_DIR,
     OUTPUTS_DIR,
+    VOCAL_DEMUCS_STALL_TIMEOUT_SECONDS,
     SUPPORTED_MEDIA_EXTENSIONS,
     VOCAL_PROCESS_ESTIMATE_SECONDS,
     VOCAL_PROGRESS_UPDATE_INTERVAL,
@@ -229,6 +230,7 @@ class StatusReporter:
         self.message = message
         self.interval = max(1, int(interval))
         self.started_at = asyncio.get_running_loop().time()
+        self.last_activity_at = self.started_at
         self.last_edit_at = 0.0
         self.stage = "Processing"
         self.remaining_seconds: int | None = None
@@ -239,6 +241,9 @@ class StatusReporter:
 
     def elapsed(self) -> int:
         return int(asyncio.get_running_loop().time() - self.started_at)
+
+    def touch(self) -> None:
+        self.last_activity_at = asyncio.get_running_loop().time()
 
     def render(self) -> str:
         return build_status_text(
@@ -267,6 +272,8 @@ class StatusReporter:
             if estimated is not None:
                 self.estimated = estimated
 
+            self.touch()
+
             now = asyncio.get_running_loop().time()
             if not force and now - self.last_edit_at < self.interval:
                 return
@@ -291,6 +298,13 @@ class StatusReporter:
 
 class DemucsResourceLimitError(RuntimeError):
     pass
+
+
+class DemucsStallError(RuntimeError):
+    pass
+
+
+STALL_MESSAGE = "Processing stalled on this file. Try a shorter file or different audio."
 
 
 async def run_command(*args: str, cwd: Path | None = None) -> tuple[int, str, str]:
@@ -440,6 +454,7 @@ async def read_demucs_stream(stream, reporter: StatusReporter, log_parts: list[s
         text = chunk.decode("utf-8", errors="replace")
         log_parts.append(text)
         recent_text = (recent_text + text)[-1000:]
+        reporter.touch()
 
         percent = parse_demucs_percent(recent_text)
         if percent is None or percent == last_percent:
@@ -498,17 +513,60 @@ async def separate_vocals(input_file: Path, job_id: str, reporter: StatusReporte
 
     stdout_parts: list[str] = []
     stderr_parts: list[str] = []
+
+    async def watchdog() -> None:
+        while True:
+            await asyncio.sleep(30)
+
+            if process.returncode is not None:
+                return
+
+            stalled_for = asyncio.get_running_loop().time() - reporter.last_activity_at
+            if stalled_for < VOCAL_DEMUCS_STALL_TIMEOUT_SECONDS:
+                continue
+
+            print(
+                f"Demucs stalled job={job_id} "
+                f"stalled_for={int(stalled_for)}s timeout={VOCAL_DEMUCS_STALL_TIMEOUT_SECONDS}s"
+            )
+            process.kill()
+            with suppress(Exception):
+                await process.wait()
+            raise DemucsStallError(
+                f"Demucs produced no useful progress for {int(stalled_for)} seconds"
+            )
+
+    reader_tasks = [
+        asyncio.create_task(read_demucs_stream(process.stdout, reporter, stdout_parts)),
+        asyncio.create_task(read_demucs_stream(process.stderr, reporter, stderr_parts)),
+    ]
+    watchdog_task = asyncio.create_task(watchdog())
+
     try:
-        await asyncio.gather(
-            read_demucs_stream(process.stdout, reporter, stdout_parts),
-            read_demucs_stream(process.stderr, reporter, stderr_parts),
-        )
+        while True:
+            done, _pending = await asyncio.wait(
+                [*reader_tasks, watchdog_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if watchdog_task in done:
+                await watchdog_task
+
+            if all(task in done or task.done() for task in reader_tasks):
+                break
+
         code = await process.wait()
     except asyncio.CancelledError:
         process.kill()
         with suppress(Exception):
             await process.wait()
         raise
+    finally:
+        watchdog_task.cancel()
+        for task in reader_tasks:
+            task.cancel()
+        with suppress(Exception):
+            await asyncio.gather(watchdog_task, *reader_tasks, return_exceptions=True)
 
     if code != 0:
         log_text = "".join(stderr_parts) or "".join(stdout_parts)
@@ -680,6 +738,11 @@ async def process_private_job(job: PrivateJob) -> None:
         await event.respond(RESOURCE_LIMIT_MESSAGE)
         if reporter:
             await reporter.update("Stopped by server limit", percent=100, force=True)
+    except DemucsStallError as exc:
+        print(f"PRIVATE VOCAL REMOVER STALL job={job.job_id}: {exc}")
+        await event.respond(STALL_MESSAGE)
+        if reporter:
+            await reporter.update("Stalled", percent=100, force=True)
     except Exception as exc:
         print(f"PRIVATE VOCAL REMOVER ERROR: {type(exc).__name__}: {exc}")
         traceback.print_exc()
