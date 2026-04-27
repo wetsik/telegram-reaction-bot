@@ -49,6 +49,7 @@ SUPPORTED_MIME_TYPES = {
 _PRIVATE_QUEUE: asyncio.Queue["PrivateJob"] = asyncio.Queue()
 _PRIVATE_WORKER: asyncio.Task | None = None
 _ACTIVE_JOB: "PrivateJob | None" = None
+_ACTIVE_TASK: asyncio.Task | None = None
 _QUEUED_CHAT_IDS: set[int] = set()
 
 
@@ -289,7 +290,14 @@ async def run_command(*args: str, cwd: Path | None = None) -> tuple[int, str, st
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await process.communicate()
+    try:
+        stdout, stderr = await process.communicate()
+    except asyncio.CancelledError:
+        process.kill()
+        with suppress(Exception):
+            await process.wait()
+        raise
+
     return (
         process.returncode,
         stdout.decode("utf-8", errors="replace"),
@@ -657,23 +665,25 @@ async def process_private_job(job: PrivateJob) -> None:
 
 
 async def private_worker() -> None:
-    global _ACTIVE_JOB, _PRIVATE_WORKER
+    global _ACTIVE_JOB, _ACTIVE_TASK, _PRIVATE_WORKER
 
     try:
         while True:
             job = await _PRIVATE_QUEUE.get()
             _ACTIVE_JOB = job
             _QUEUED_CHAT_IDS.discard(job.chat_id)
+            _ACTIVE_TASK = asyncio.create_task(process_private_job(job))
 
             try:
-                await process_private_job(job)
+                await _ACTIVE_TASK
             except asyncio.CancelledError:
-                raise
+                print(f"Private job cancelled for chat {job.chat_id}")
             except Exception as exc:
                 print(f"PRIVATE WORKER ERROR: {type(exc).__name__}: {exc}")
                 traceback.print_exc()
             finally:
                 _ACTIVE_JOB = None
+                _ACTIVE_TASK = None
                 _PRIVATE_QUEUE.task_done()
 
             if _PRIVATE_QUEUE.empty():
@@ -681,6 +691,7 @@ async def private_worker() -> None:
     finally:
         _PRIVATE_WORKER = None
         _ACTIVE_JOB = None
+        _ACTIVE_TASK = None
 
 
 def ensure_worker_running() -> None:
@@ -689,8 +700,15 @@ def ensure_worker_running() -> None:
         _PRIVATE_WORKER = asyncio.create_task(private_worker())
 
 
+def has_active_or_queued_job(chat_id: int) -> bool:
+    return (
+        chat_id in _QUEUED_CHAT_IDS
+        or (_ACTIVE_JOB is not None and _ACTIVE_JOB.chat_id == chat_id)
+    )
+
+
 async def cancel_private_processing(event) -> None:
-    global _PRIVATE_WORKER, _ACTIVE_JOB
+    global _ACTIVE_JOB, _ACTIVE_TASK
 
     chat_id = event.chat_id
     active_for_chat = _ACTIVE_JOB is not None and _ACTIVE_JOB.chat_id == chat_id
@@ -709,10 +727,10 @@ async def cancel_private_processing(event) -> None:
     for job in kept_jobs:
         await _PRIVATE_QUEUE.put(job)
 
-    if active_for_chat and _PRIVATE_WORKER:
-        _PRIVATE_WORKER.cancel()
+    if active_for_chat and _ACTIVE_TASK and not _ACTIVE_TASK.done():
+        _ACTIVE_TASK.cancel()
         with suppress(asyncio.CancelledError):
-            await _PRIVATE_WORKER
+            await _ACTIVE_TASK
 
     if active_for_chat or removed:
         await event.respond(CANCELLED_MESSAGE)
@@ -728,7 +746,11 @@ async def enqueue_private_job(event, client) -> None:
     if chat_id is None:
         return
 
-    if chat_id in _QUEUED_CHAT_IDS:
+    if has_active_or_queued_job(chat_id):
+        await event.respond("Already processing your file. Use /cancel to stop it first.")
+        return
+
+    if _ACTIVE_JOB is not None or not _PRIVATE_QUEUE.empty():
         await event.respond("Queued. I will process it after the current file.")
     else:
         await event.respond("Queued. I will process it shortly.")
