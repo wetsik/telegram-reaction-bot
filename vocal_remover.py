@@ -26,6 +26,11 @@ from settings import (
 PROCESSING_MESSAGE = "⏳ Processing your file..."
 DONE_MESSAGE = "✅ Done! Download below."
 ERROR_MESSAGE = "❌ Error occurred while processing."
+TIMEOUT_MESSAGE = "❌ Processing took too long and was stopped. Try a shorter file."
+RESOURCE_LIMIT_MESSAGE = (
+    "❌ Processing stopped by the server resource limit. "
+    "Try a shorter file or lower quality audio."
+)
 UNSUPPORTED_MESSAGE = "⚠️ Unsupported format. Send audio/video or a link."
 INSTRUCTION_MESSAGE = (
     "Send an audio/video file, voice message, or a YouTube/direct media link.\n"
@@ -37,6 +42,7 @@ NOTHING_TO_CANCEL_MESSAGE = "Nothing is processing right now."
 
 URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 PERCENT_RE = re.compile(r"(\d{1,3})%")
+DEMUCS_RESOURCE_LIMIT_CODES = {-9, 137}
 RESULT_CACHE_DIR = OUTPUTS_DIR / "cache"
 
 SUPPORTED_MIME_PREFIXES = ("audio/", "video/")
@@ -283,6 +289,10 @@ class StatusReporter:
         self.finished = True
 
 
+class DemucsResourceLimitError(RuntimeError):
+    pass
+
+
 async def run_command(*args: str, cwd: Path | None = None) -> tuple[int, str, str]:
     process = await asyncio.create_subprocess_exec(
         *args,
@@ -465,11 +475,20 @@ async def separate_vocals(input_file: Path, job_id: str, reporter: StatusReporte
     job_output_dir.mkdir(parents=True, exist_ok=True)
 
     await reporter.update("Starting Demucs", force=True)
+    print(f"Starting Demucs job={job_id} input={input_file}")
     process = await asyncio.create_subprocess_exec(
         "demucs",
         "-n",
         "htdemucs",
         "--two-stems=vocals",
+        "--device",
+        "cpu",
+        "--jobs",
+        "1",
+        "--segment",
+        "7",
+        "--overlap",
+        "0.1",
         "-o",
         str(job_output_dir),
         str(input_file),
@@ -492,10 +511,17 @@ async def separate_vocals(input_file: Path, job_id: str, reporter: StatusReporte
         raise
 
     if code != 0:
-        print(f"demucs failed: {''.join(stderr_parts) or ''.join(stdout_parts)}")
+        log_text = "".join(stderr_parts) or "".join(stdout_parts)
+        print(f"demucs failed job={job_id} code={code}: {log_text}")
+        if code in DEMUCS_RESOURCE_LIMIT_CODES:
+            raise DemucsResourceLimitError(f"Demucs stopped by resource limit: code={code}")
         return None
 
-    return find_no_vocals_file(input_file, job_output_dir)
+    result = find_no_vocals_file(input_file, job_output_dir)
+    if not result:
+        print(f"demucs finished but no no_vocals.wav found job={job_id} output_dir={job_output_dir}")
+
+    return result
 
 
 async def convert_wav_to_mp3(wav_file: Path, job_id: str, reporter: StatusReporter) -> Path:
@@ -644,6 +670,16 @@ async def process_private_job(job: PrivateJob) -> None:
         if reporter:
             await reporter.update("Cancelled", percent=0, force=True)
         raise
+    except asyncio.TimeoutError:
+        print(f"PRIVATE VOCAL REMOVER TIMEOUT job={job.job_id}")
+        await event.respond(TIMEOUT_MESSAGE)
+        if reporter:
+            await reporter.update("Timed out", percent=100, force=True)
+    except DemucsResourceLimitError as exc:
+        print(f"PRIVATE VOCAL REMOVER RESOURCE LIMIT job={job.job_id}: {exc}")
+        await event.respond(RESOURCE_LIMIT_MESSAGE)
+        if reporter:
+            await reporter.update("Stopped by server limit", percent=100, force=True)
     except Exception as exc:
         print(f"PRIVATE VOCAL REMOVER ERROR: {type(exc).__name__}: {exc}")
         traceback.print_exc()
