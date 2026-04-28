@@ -6,7 +6,7 @@ import time
 from telethon import functions, types
 from telethon.errors import FloodWaitError
 
-from ai_replies import generate_context_reply, should_join_context
+from ai_replies import describe_image_for_chat, generate_context_reply, should_join_context
 from group_data import (
     BLACKLIST_CONTAINS,
     GREETING_WORDS,
@@ -290,6 +290,55 @@ def looks_like_question(text: str) -> bool:
     )
     words = set(t.replace(",", " ").replace(".", " ").split())
     return any(word in words for word in question_words)
+
+
+def get_image_mime_type(event) -> str | None:
+    message = getattr(event, "message", None)
+    if not message:
+        return None
+
+    if getattr(message, "photo", None):
+        return "image/jpeg"
+
+    document = getattr(message, "document", None)
+    mime = (getattr(document, "mime_type", "") or "").lower() if document else ""
+    if mime in {"image/jpeg", "image/png", "image/webp", "image/gif"}:
+        return mime
+
+    return None
+
+
+def is_animated_sticker(event) -> bool:
+    document = getattr(getattr(event, "message", None), "document", None)
+    if not document:
+        return False
+
+    mime = (getattr(document, "mime_type", "") or "").lower()
+    for attribute in getattr(document, "attributes", []):
+        if getattr(attribute, "stickerset", None) and mime in {"application/x-tgsticker", "video/webm"}:
+            return True
+
+    return False
+
+
+async def describe_message_media(event) -> str | None:
+    if is_animated_sticker(event):
+        return "анимированный стикер, точное содержимое не прочитано"
+
+    mime_type = get_image_mime_type(event)
+    if not mime_type:
+        return None
+
+    try:
+        media_bytes = await event.message.download_media(file=bytes)
+        if not media_bytes:
+            return None
+
+        return await describe_image_for_chat(media_bytes, mime_type)
+
+    except Exception as error:
+        print(f"Media description failed: {type(error).__name__}: {repr(error)}")
+        return None
 
 
 def looks_like_followup(text: str) -> bool:
@@ -756,11 +805,17 @@ async def handle_group_message(event):
     if sender and me and getattr(sender, "id", None) == me.id:
         return
 
-    if not text.strip():
-        return
-
     chat_id = event.chat_id
     cleaned = clean_text(text)
+    media_description = await describe_message_media(event)
+
+    if media_description:
+        cleaned = clean_text(
+            f"{text}\n[media: {media_description}]" if text.strip() else f"[media: {media_description}]"
+        )
+
+    if not cleaned.strip():
+        return
 
     if contains_blacklisted(cleaned):
         last_message_time[chat_id] = time.time()

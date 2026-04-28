@@ -1,3 +1,4 @@
+import base64
 import json
 
 import aiohttp
@@ -120,6 +121,68 @@ async def generate_context_reply(
     except Exception as error:
         print(f"OpenAI reply failed: {type(error).__name__}: {repr(error)}")
         return f"openai error: {type(error).__name__}"
+
+
+async def describe_image_for_chat(image_bytes: bytes, mime_type: str) -> str | None:
+    if not ENABLE_OPENAI_REPLIES or not OPENAI_API_KEY:
+        return None
+
+    image_data = base64.b64encode(image_bytes).decode("ascii")
+    payload = {
+        "model": OPENAI_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Describe this image/sticker for a Telegram chat bot. "
+                    "Focus on readable text, meme meaning, visible objects, and emotional tone. "
+                    "Reply in Russian, concise, no markdown."
+                ),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Что на картинке?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime_type};base64,{image_data}",
+                        },
+                    },
+                ],
+            },
+        ],
+        "max_completion_tokens": 160,
+    }
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=20, connect=8, sock_read=20)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                OPENAI_CHAT_COMPLETIONS_URL,
+                headers=headers,
+                json=payload,
+            ) as response:
+                raw = await response.text()
+                if response.status != 200:
+                    print(f"OpenAI vision error: status={response.status}, body={raw[:500]}")
+                    return None
+
+        data = json.loads(raw)
+        choices = data.get("choices") or []
+        if not choices:
+            return None
+
+        message = choices[0].get("message") or {}
+        return _clean_reply(message.get("content") or "") or None
+
+    except Exception as error:
+        print(f"OpenAI vision failed: {type(error).__name__}: {repr(error)}")
+        return None
 
 
 async def should_join_context(

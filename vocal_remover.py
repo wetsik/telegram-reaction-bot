@@ -885,8 +885,7 @@ async def handle_private_vocal_remover(event, client) -> bool:
 
     if has_media:
         if not is_supported_media_event(event):
-            await event.respond(UNSUPPORTED_MESSAGE)
-            return True
+            return False
         await enqueue_private_job(event, client)
         return True
 
