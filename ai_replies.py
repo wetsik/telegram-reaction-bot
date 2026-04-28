@@ -25,6 +25,9 @@ async def generate_context_reply(
     *,
     text: str,
     context_messages: list[str],
+    chat_memory: str,
+    speaker_name: str,
+    bot_names: list[str],
     label: str,
     mentioned: bool,
 ) -> str | None:
@@ -33,9 +36,11 @@ async def generate_context_reply(
 
     recent = context_messages[-6:]
     context = "\n".join(f"- {message}" for message in recent if message.strip())
+    bot_identity = ", ".join(name for name in bot_names if name)
 
     system_prompt = (
         "You are a normal Telegram chat participant, not an assistant. "
+        f"Your chat name or aliases are: {bot_identity}. "
         "Reply in the same language as the chat, usually Russian. "
         "Write naturally, like a smart friend in chat. "
         "Use casual slang, but do not overdo it. "
@@ -53,10 +58,13 @@ async def generate_context_reply(
     )
     user_prompt = (
         f"Recent chat messages:\n{context}\n\n"
+        f"People memory for this chat:\n{chat_memory or 'no memory yet'}\n\n"
+        f"Current speaker:\n{speaker_name}\n\n"
         f"New message:\n{text}\n\n"
         f"Detected mood: {label}\n"
         f"Bot was mentioned: {mentioned}\n\n"
-        "Write a natural chat reply. If this is a question, answer it clearly."
+        "Write a natural chat reply. If this is a question, answer it clearly. "
+        "Use the memory only when it helps; do not randomly list it."
     )
 
     payload = {

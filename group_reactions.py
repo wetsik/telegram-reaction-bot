@@ -17,18 +17,21 @@ from group_data import (
     SAFE_EMOJIS,
 )
 from group_state import (
+    build_chat_memory,
     chat_state,
     last_message_time,
     last_used_reaction,
     mark_init_sent,
     mark_reaction_sent,
     mark_text_sent,
+    remember_user_message,
     reaction_memory_by_chat,
     recent_bot_texts,
     recent_messages,
     refresh_hour_bucket,
 )
 from settings import (
+    BOT_NAME,
     BOT_NAME_HINTS,
     ENABLE_INIT_MESSAGES,
     ENABLE_REACTIONS,
@@ -629,6 +632,8 @@ async def handle_group_message(event):
 
     last_message_time[chat_id] = time.time()
     recent_messages[chat_id].append(cleaned)
+    speaker_name = remember_user_message(chat_id, sender, cleaned)
+    chat_memory = build_chat_memory(chat_id)
 
     is_private_chat = bool(event.is_private)
     mentioned = is_private_chat or any(name and name.lower() in cleaned for name in BOT_NAME_HINTS)
@@ -686,6 +691,9 @@ async def handle_group_message(event):
         reply = await generate_context_reply(
             text=text,
             context_messages=context_messages,
+            chat_memory=chat_memory,
+            speaker_name=speaker_name,
+            bot_names=[BOT_NAME, *BOT_NAME_HINTS],
             label=final_label,
             mentioned=mentioned,
         )

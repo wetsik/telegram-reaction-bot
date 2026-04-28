@@ -56,6 +56,7 @@ MAX_REACTIONS_PER_HOUR = int(os.environ.get("MAX_REACTIONS_PER_HOUR", "160"))
 
 RECENT_MSGS_LIMIT = int(os.environ.get("RECENT_MSGS_LIMIT", "35"))
 RECENT_BOT_TEXTS_LIMIT = int(os.environ.get("RECENT_BOT_TEXTS_LIMIT", "12"))
+USER_MEMORY_LIMIT = int(os.environ.get("USER_MEMORY_LIMIT", "8"))
 MAX_CONTEXT = int(os.environ.get("MAX_CONTEXT", "8"))
 
 ENABLE_INIT_MESSAGES = os.environ.get(
