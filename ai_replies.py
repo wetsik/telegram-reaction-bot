@@ -48,7 +48,11 @@ async def generate_context_reply(
         "For simple chat, keep it short. "
         "For real questions, answer normally and explain in simple casual words. "
         "For educational questions, give a clear useful answer in 1-4 short sentences. "
+        "If someone shares good news or asks to be congratulated, react warmly and casually. "
         "If someone insults or challenges you, answer back naturally and briefly. "
+        "If the chat is actively discussing something and your reaction fits, join the conversation like a person. "
+        "In debates, you may take a side or make a short skeptical comment, but do not lecture. "
+        "Sometimes respond even when you were not directly addressed, if it feels socially natural. "
         "Light sarcasm is ok when it fits, but do not force jokes or roasts. "
         "No cringe phrases like 'botik', 'living bot', 'what will you tell me', theatrical hype, or fake enthusiasm. "
         "Do not sound like customer support or a textbook. "
@@ -115,3 +119,78 @@ async def generate_context_reply(
     except Exception as error:
         print(f"OpenAI reply failed: {type(error).__name__}: {repr(error)}")
         return f"openai error: {type(error).__name__}"
+
+
+async def should_join_context(
+    *,
+    text: str,
+    context_messages: list[str],
+    chat_memory: str,
+    speaker_name: str,
+    bot_names: list[str],
+    label: str,
+) -> bool:
+    if not ENABLE_OPENAI_REPLIES or not OPENAI_API_KEY:
+        return False
+
+    recent = context_messages[-8:]
+    context = "\n".join(f"- {message}" for message in recent if message.strip())
+    bot_identity = ", ".join(name for name in bot_names if name)
+
+    payload = {
+        "model": OPENAI_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Decide if a casual Telegram participant should reply now. "
+                    f"The participant aliases are: {bot_identity}. "
+                    "Return only YES or NO. "
+                    "Say YES for direct questions, replies to the participant, active debates, "
+                    "good news, insults/challenges, or moments where a short natural comment fits. "
+                    "You can also say YES when joining unprompted would make the chat feel more alive. "
+                    "Say NO for random background chatter where joining would feel forced."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Recent chat messages:\n{context}\n\n"
+                    f"People memory:\n{chat_memory or 'no memory yet'}\n\n"
+                    f"Current speaker:\n{speaker_name}\n"
+                    f"New message:\n{text}\n"
+                    f"Detected mood: {label}\n"
+                ),
+            },
+        ],
+        "max_completion_tokens": 4,
+    }
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=8, connect=4, sock_read=8)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                OPENAI_CHAT_COMPLETIONS_URL,
+                headers=headers,
+                json=payload,
+            ) as response:
+                if response.status != 200:
+                    raw = await response.text()
+                    print(f"OpenAI join check error: status={response.status}, body={raw[:300]}")
+                    return False
+                data = await response.json()
+
+        choices = data.get("choices") or []
+        if not choices:
+            return False
+
+        answer = ((choices[0].get("message") or {}).get("content") or "").strip().upper()
+        return answer.startswith("YES")
+
+    except Exception as error:
+        print(f"OpenAI join check failed: {type(error).__name__}: {repr(error)}")
+        return False

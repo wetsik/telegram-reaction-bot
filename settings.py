@@ -45,13 +45,13 @@ MIN_DELAY = float(os.environ.get("MIN_DELAY", "0.25"))
 MAX_DELAY = float(os.environ.get("MAX_DELAY", "0.9"))
 
 REACTION_CHANCE = float(os.environ.get("REACTION_CHANCE", "0.98"))
-TEXT_REPLY_CHANCE = float(os.environ.get("TEXT_REPLY_CHANCE", "0.28"))
+TEXT_REPLY_CHANCE = float(os.environ.get("TEXT_REPLY_CHANCE", "0.65"))
 MENTION_REPLY_CHANCE = float(os.environ.get("MENTION_REPLY_CHANCE", "0.85"))
 
 TEXT_COOLDOWN = int(os.environ.get("TEXT_COOLDOWN", "0"))
 REACTION_COOLDOWN = int(os.environ.get("REACTION_COOLDOWN", "0"))
 
-MAX_TEXTS_PER_HOUR = int(os.environ.get("MAX_TEXTS_PER_HOUR", "60"))
+MAX_TEXTS_PER_HOUR = int(os.environ.get("MAX_TEXTS_PER_HOUR", "120"))
 MAX_REACTIONS_PER_HOUR = int(os.environ.get("MAX_REACTIONS_PER_HOUR", "160"))
 
 RECENT_MSGS_LIMIT = int(os.environ.get("RECENT_MSGS_LIMIT", "35"))

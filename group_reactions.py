@@ -6,7 +6,7 @@ import time
 from telethon import functions, types
 from telethon.errors import FloodWaitError
 
-from ai_replies import generate_context_reply
+from ai_replies import generate_context_reply, should_join_context
 from group_data import (
     BLACKLIST_CONTAINS,
     GREETING_WORDS,
@@ -332,6 +332,112 @@ def looks_like_insult(text: str) -> bool:
     return any(word in t for word in insult_words)
 
 
+def looks_like_social_cue(text: str) -> bool:
+    t = clean_text(text)
+    social_words = (
+        "поздрав",
+        "ура",
+        "наконец",
+        "получил",
+        "получила",
+        "сдал",
+        "сдала",
+        "купил",
+        "купила",
+        "выиграл",
+        "выиграла",
+        "др",
+        "день рождения",
+        "можете меня поздравить",
+        "зацените",
+        "оцените",
+    )
+    return any(word in t for word in social_words)
+
+
+def looks_like_conversation_hook(text: str, label: str) -> bool:
+    t = clean_text(text)
+    words = t.split()
+
+    if looks_like_question(t) or looks_like_followup(t) or looks_like_insult(t) or looks_like_social_cue(t):
+        return True
+
+    if label in {"funny", "shock", "hype", "sad", "anger", "disagreement", "love"}:
+        return True
+
+    if len(words) >= 4 and any(mark in t for mark in (",", " но ", " а ", " короче", " типо", " типа")):
+        return True
+
+    if looks_like_debate(t):
+        return True
+
+    hook_words = (
+        "народ",
+        "пацаны",
+        "ребят",
+        "блин",
+        "капец",
+        "жесть",
+        "имба",
+        "кайф",
+        "прикол",
+        "смотрите",
+        "слушайте",
+        "кажется",
+        "думаю",
+        "походу",
+        "кстати",
+        "реально",
+        "согласны",
+        "помогите",
+        "подскажите",
+        "объясните",
+    )
+    if any(word in t for word in hook_words):
+        return True
+
+    return False
+
+
+def looks_like_debate(text: str) -> bool:
+    t = clean_text(text)
+    debate_markers = (
+        "не соглас",
+        "не факт",
+        "спорно",
+        "бред",
+        "зато",
+        "однако",
+        "хотя",
+        "если",
+        "потому",
+        "поэтому",
+        "значит",
+        "думаю",
+        "мне кажется",
+        "по моему",
+        "по-моему",
+        "реально",
+        "вообще",
+        "на самом деле",
+    )
+    return any(marker in t for marker in debate_markers)
+
+
+def recent_discussion_bonus(chat_id: int) -> float:
+    messages = list(recent_messages[chat_id])[-8:]
+    if len(messages) < 4:
+        return 0.0
+
+    joined = " ".join(messages)
+    active_score = min(len(messages) * 0.025, 0.18)
+
+    if any(marker in joined for marker in ("?", " но ", " а ", "не соглас", "спорно", "бред")):
+        active_score += 0.18
+
+    return min(active_score, 0.35)
+
+
 def should_send_reaction(
     chat_id: int,
     text: str,
@@ -384,6 +490,7 @@ def should_send_text(
     mentioned: bool,
     label: str,
     confidence: float,
+    ai_should_join: bool = False,
 ) -> bool:
     now = int(time.time())
     hour = get_local_hour()
@@ -410,28 +517,12 @@ def should_send_text(
     if len(text.strip()) < MIN_TEXT_LEN and not mentioned:
         return False
 
-    if (
-        label == "question"
-        or looks_like_question(text)
-        or looks_like_followup(text)
-        or looks_like_insult(text)
-    ):
+    if ai_should_join:
         if now - state["last_text_at"] < 2:
             return False
         return True
 
-    fit_score = _text_fit_score(text, label, confidence, mentioned)
-    if fit_score <= 0:
-        return False
-
-    chance = MENTION_REPLY_CHANCE if mentioned else TEXT_REPLY_CHANCE
-    chance *= fit_score
-
-    chance += recent_activity_bonus(chat_id)
-
-    chance *= (0.75 + 0.25 * get_activity_multiplier(hour))
-
-    return random.random() < min(chance, 1.0)
+    return False
 
 
 def generate_init_message() -> str:
@@ -747,12 +838,24 @@ async def handle_group_message(event):
         emoji = pick_reaction_by_label(chat_id, final_label)
         await send_reaction(event, emoji, final_label)
 
+    ai_should_join = False
+    if not mentioned and ENABLE_TEXT_REPLIES:
+        ai_should_join = await should_join_context(
+            text=text,
+            context_messages=context_messages,
+            chat_memory=chat_memory,
+            speaker_name=speaker_name,
+            bot_names=[BOT_NAME, *BOT_NAME_HINTS],
+            label=final_label,
+        )
+
     if ENABLE_TEXT_REPLIES and should_send_text(
         chat_id,
         text,
         mentioned,
         final_label,
         float(final_confidence),
+        ai_should_join,
     ):
         reply = await generate_context_reply(
             text=text,
