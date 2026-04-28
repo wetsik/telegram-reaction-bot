@@ -32,6 +32,11 @@ async def generate_context_reply(
     label: str,
     mentioned: bool,
 ) -> str | None:
+    # FIX: бот отвечает только если его отметили или ответили ему реплаем.
+    # В основном обработчике mentioned должен быть True для @упоминания ИЛИ reply на бота.
+    if not mentioned:
+        return None
+
     if not ENABLE_OPENAI_REPLIES or not OPENAI_API_KEY:
         return OPENAI_NOT_CONFIGURED_REPLY
 
@@ -53,9 +58,7 @@ async def generate_context_reply(
         "Default tone is neutral, friendly, or lightly playful. "
         "If someone insults, mocks, or provokes you first, clap back confidently and briefly. "
         "Do not add negativity when the user is just sharing work, plans, or normal context. "
-        "If the chat is actively discussing something and your reaction fits, join the conversation like a person. "
         "In debates, make one short point, do not justify yourself at length. "
-        "Sometimes respond even when you were not directly addressed, if it feels socially natural. "
         "Light sarcasm is ok when it fits, but do not force jokes or roasts. "
         "No cringe phrases like 'botik', 'living bot', 'what will you tell me', theatrical hype, or fake enthusiasm. "
         "Do not sound like customer support or a textbook. "
@@ -63,17 +66,18 @@ async def generate_context_reply(
         "No markdown, hashtags, quotes, or emojis. "
         "Do not be cruel, hateful, sexual, threatening, or target protected traits. "
         "Avoid long self-defense. Avoid explaining why you replied unless asked. "
-        "If directly mentioned, always reply. "
-        "If not mentioned, join only when you have a natural reaction to the ongoing discussion. "
+        "Only reply when you are directly mentioned or someone replies to your message. "
+        "If directly mentioned or replied to, always reply. "
         "Pay attention to who said what. Short follow-ups like 'and what' or 'so what' often refer to the previous bot reply."
     )
+
     user_prompt = (
         f"Recent chat messages:\n{context}\n\n"
         f"People memory for this chat:\n{chat_memory or 'no memory yet'}\n\n"
         f"Current speaker:\n{speaker_name}\n\n"
         f"New message:\n{text}\n\n"
         f"Detected mood: {label}\n"
-        f"Bot was mentioned: {mentioned}\n\n"
+        f"Bot was mentioned or replied to: {mentioned}\n\n"
         "Write a natural chat reply. If this is a question, answer it clearly. "
         "Use the memory and recent speaker order only when it helps; do not randomly list it."
     )
@@ -86,6 +90,7 @@ async def generate_context_reply(
         ],
         "max_completion_tokens": 90,
     }
+
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json",
@@ -130,6 +135,7 @@ async def describe_image_for_chat(image_bytes: bytes, mime_type: str) -> str | N
         return None
 
     image_data = base64.b64encode(image_bytes).decode("ascii")
+
     payload = {
         "model": OPENAI_MODEL,
         "messages": [
@@ -156,6 +162,7 @@ async def describe_image_for_chat(image_bytes: bytes, mime_type: str) -> str | N
         ],
         "max_completion_tokens": 160,
     }
+
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json",
@@ -163,6 +170,7 @@ async def describe_image_for_chat(image_bytes: bytes, mime_type: str) -> str | N
 
     try:
         timeout = aiohttp.ClientTimeout(total=20, connect=8, sock_read=20)
+
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
                 OPENAI_CHAT_COMPLETIONS_URL,
@@ -170,12 +178,14 @@ async def describe_image_for_chat(image_bytes: bytes, mime_type: str) -> str | N
                 json=payload,
             ) as response:
                 raw = await response.text()
+
                 if response.status != 200:
                     print(f"OpenAI vision error: status={response.status}, body={raw[:500]}")
                     return None
 
         data = json.loads(raw)
         choices = data.get("choices") or []
+
         if not choices:
             return None
 
@@ -196,68 +206,6 @@ async def should_join_context(
     bot_names: list[str],
     label: str,
 ) -> bool:
-    if not ENABLE_OPENAI_REPLIES or not OPENAI_API_KEY:
-        return False
-
-    recent = context_messages[-8:]
-    context = "\n".join(f"- {message}" for message in recent if message.strip())
-    bot_identity = ", ".join(name for name in bot_names if name)
-
-    payload = {
-        "model": OPENAI_MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Decide if a casual Telegram participant should reply now. "
-                    f"The participant aliases are: {bot_identity}. "
-                    "Return only YES or NO. "
-                    "Say YES for direct questions, replies to the participant, good news, "
-                    "clear insults/challenges, or active debates where the participant has a useful short line. "
-                    "Do not join just to make a negative joke about someone's work or plans. "
-                    "Say YES unprompted only when joining would feel clearly natural and not annoying. "
-                    "Say NO for random background chatter where joining would feel forced."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Recent chat messages:\n{context}\n\n"
-                    f"People memory:\n{chat_memory or 'no memory yet'}\n\n"
-                    f"Current speaker:\n{speaker_name}\n"
-                    f"New message:\n{text}\n"
-                    f"Detected mood: {label}\n"
-                ),
-            },
-        ],
-        "max_completion_tokens": 4,
-    }
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    try:
-        timeout = aiohttp.ClientTimeout(total=8, connect=4, sock_read=8)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-                OPENAI_CHAT_COMPLETIONS_URL,
-                headers=headers,
-                json=payload,
-            ) as response:
-                if response.status != 200:
-                    raw = await response.text()
-                    print(f"OpenAI join check error: status={response.status}, body={raw[:300]}")
-                    return False
-                data = await response.json()
-
-        choices = data.get("choices") or []
-        if not choices:
-            return False
-
-        answer = ((choices[0].get("message") or {}).get("content") or "").strip().upper()
-        return answer.startswith("YES")
-
-    except Exception as error:
-        print(f"OpenAI join check failed: {type(error).__name__}: {repr(error)}")
-        return False
+    # FIX: полностью отключаем самостоятельное вступление в чат.
+    # Теперь бот не будет сам решать, нужно ли отвечать.
+    return False
