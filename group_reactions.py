@@ -13,16 +13,13 @@ from group_data import (
     INIT_CORE,
     INIT_END,
     INIT_START,
-    LIGHT_ROAST_REPLIES,
     REACTIONS,
     SAFE_EMOJIS,
-    TEXT_REPLIES,
 )
 from group_state import (
     chat_state,
     last_message_time,
     last_used_reaction,
-    last_used_reply,
     mark_init_sent,
     mark_reaction_sent,
     mark_text_sent,
@@ -363,13 +360,18 @@ def should_send_text(
     state = chat_state[chat_id]
     window = _advance_text_window(chat_id)
 
-    if state["texts_in_last_hour"] >= MAX_TEXTS_PER_HOUR:
-        return False
-
     if is_greeting_for_bot(text, mentioned):
         if now - state["last_text_at"] < 30:
             return False
         return True
+
+    if mentioned:
+        if now - state["last_text_at"] < 5:
+            return False
+        return True
+
+    if state["texts_in_last_hour"] >= MAX_TEXTS_PER_HOUR:
+        return False
 
     if now - state["last_text_at"] < TEXT_COOLDOWN:
         return False
@@ -650,7 +652,8 @@ async def handle_group_message(event):
     last_message_time[chat_id] = time.time()
     recent_messages[chat_id].append(cleaned)
 
-    mentioned = any(name and name.lower() in cleaned for name in BOT_NAME_HINTS)
+    is_private_chat = bool(event.is_private)
+    mentioned = is_private_chat or any(name and name.lower() in cleaned for name in BOT_NAME_HINTS)
     context_messages = list(recent_messages[chat_id])
 
     rule_label, rule_confidence, _ = score_with_rules(text, context_messages)
@@ -708,9 +711,8 @@ async def handle_group_message(event):
             label=final_label,
             mentioned=mentioned,
         )
-        if not reply:
-            reply = pick_reply_by_label(chat_id, final_label, text)
-        await send_text(event, reply)
+        if reply:
+            await send_text(event, reply)
 
     print(json.dumps({
         "chat_id": chat_id,

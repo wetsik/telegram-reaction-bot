@@ -866,28 +866,28 @@ async def enqueue_private_job(event, client) -> None:
     ensure_worker_running()
 
 
-async def handle_private_vocal_remover(event, client) -> None:
+async def handle_private_vocal_remover(event, client) -> bool:
     text = event.raw_text or ""
     has_media = bool(getattr(event.message, "media", None))
 
     # Userbots receive their own outgoing messages too. Private service should
     # process incoming user messages only, otherwise sent results can loop.
     if event.out:
-        return
+        return True
 
     if is_private_cancel_command(text):
         await cancel_private_processing(event)
-        return
+        return True
 
     if extract_first_url(text):
         await enqueue_private_job(event, client)
-        return
+        return True
 
     if has_media:
         if not is_supported_media_event(event):
             await event.respond(UNSUPPORTED_MESSAGE)
-            return
+            return True
         await enqueue_private_job(event, client)
-        return
+        return True
 
-    await event.respond(INSTRUCTION_MESSAGE)
+    return False
