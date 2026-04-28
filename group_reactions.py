@@ -719,7 +719,7 @@ async def send_reaction(event, emoji: str, label: str):
 async def send_text(event, text: str):
     try:
         await human_delay()
-        await event.respond(text)
+        await event.reply(text)
         recent_bot_texts[event.chat_id].append(text)
         recent_messages[event.chat_id].append(f"{BOT_NAME}: {clean_text(text)}")
         mark_text_sent(event.chat_id)
