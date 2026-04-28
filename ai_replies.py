@@ -44,6 +44,7 @@ async def generate_context_reply(
         "Reply in the same language as the chat, usually Russian. "
         "Write naturally, like a smart friend in chat. "
         "Use casual slang, but do not overdo it. "
+        "When talking about yourself, speak in first person singular. "
         "For simple chat, keep it short. "
         "For real questions, answer normally and explain in simple casual words. "
         "For educational questions, give a clear useful answer in 1-4 short sentences. "
@@ -54,7 +55,8 @@ async def generate_context_reply(
         "No markdown, hashtags, quotes, or emojis. "
         "Do not be cruel, hateful, sexual, threatening, or target protected traits. "
         "If directly mentioned, always reply. "
-        "If not mentioned and there is no natural reply, return an empty string."
+        "If not mentioned, join only when you have a natural reaction to the ongoing discussion. "
+        "Pay attention to who said what. Short follow-ups like 'and what' or 'so what' often refer to the previous bot reply."
     )
     user_prompt = (
         f"Recent chat messages:\n{context}\n\n"
@@ -64,7 +66,7 @@ async def generate_context_reply(
         f"Detected mood: {label}\n"
         f"Bot was mentioned: {mentioned}\n\n"
         "Write a natural chat reply. If this is a question, answer it clearly. "
-        "Use the memory only when it helps; do not randomly list it."
+        "Use the memory and recent speaker order only when it helps; do not randomly list it."
     )
 
     payload = {

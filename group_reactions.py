@@ -292,6 +292,24 @@ def looks_like_question(text: str) -> bool:
     return any(word in words for word in question_words)
 
 
+def looks_like_followup(text: str) -> bool:
+    t = clean_text(text)
+    followups = {
+        "и че",
+        "и чо",
+        "и что",
+        "ну и",
+        "дальше",
+        "пон",
+        "понял",
+        "ясно",
+        "ок",
+        "ладно",
+        "а дальше",
+    }
+    return t in followups or t.startswith(("и че ", "и чо ", "и что ", "а дальше "))
+
+
 def should_send_reaction(
     chat_id: int,
     text: str,
@@ -370,7 +388,7 @@ def should_send_text(
     if len(text.strip()) < MIN_TEXT_LEN and not mentioned:
         return False
 
-    if label == "question" or looks_like_question(text):
+    if label == "question" or looks_like_question(text) or looks_like_followup(text):
         if now - state["last_text_at"] < 45:
             return False
         return True
@@ -536,6 +554,7 @@ async def send_text(event, text: str):
         await human_delay()
         await event.respond(text)
         recent_bot_texts[event.chat_id].append(text)
+        recent_messages[event.chat_id].append(f"{BOT_NAME}: {clean_text(text)}")
         mark_text_sent(event.chat_id)
 
         print(f"Sent text '{text}' to chat {event.chat_id}")
@@ -630,9 +649,11 @@ async def handle_group_message(event):
         recent_messages[chat_id].append(cleaned)
         return
 
-    last_message_time[chat_id] = time.time()
-    recent_messages[chat_id].append(cleaned)
     speaker_name = remember_user_message(chat_id, sender, cleaned)
+    display_message = f"{speaker_name}: {cleaned}"
+
+    last_message_time[chat_id] = time.time()
+    recent_messages[chat_id].append(display_message)
     chat_memory = build_chat_memory(chat_id)
 
     is_private_chat = bool(event.is_private)
