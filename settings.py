@@ -45,7 +45,7 @@ MIN_DELAY = float(os.environ.get("MIN_DELAY", "0.25"))
 MAX_DELAY = float(os.environ.get("MAX_DELAY", "0.9"))
 
 REACTION_CHANCE = float(os.environ.get("REACTION_CHANCE", "0.98"))
-TEXT_REPLY_CHANCE = float(os.environ.get("TEXT_REPLY_CHANCE", "0.65"))
+TEXT_REPLY_CHANCE = float(os.environ.get("TEXT_REPLY_CHANCE", "0.45"))
 MENTION_REPLY_CHANCE = float(os.environ.get("MENTION_REPLY_CHANCE", "0.85"))
 
 TEXT_COOLDOWN = int(os.environ.get("TEXT_COOLDOWN", "0"))
