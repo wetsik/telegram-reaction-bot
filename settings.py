@@ -79,6 +79,7 @@ USE_AI_CLASSIFICATION = os.environ.get(
 BOT_NAME = "westik"
 BOT_VERSION = "v1.0.0"
 BOT_STAGE = "stable"
+OWNER_USERNAME = "pooreshechqa"
 
 ENABLE_REACTIONS = True
 ENABLE_TEXT_REPLIES = True

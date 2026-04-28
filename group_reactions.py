@@ -1,6 +1,7 @@
 import asyncio
 import json
 import random
+import re
 import time
 
 from telethon import functions, types
@@ -18,7 +19,9 @@ from group_data import (
     SPECIAL_PRAISE_ALIASES,
 )
 from group_state import (
+    add_owner_memory_note,
     build_chat_memory,
+    build_owner_memory_context,
     chat_state,
     last_message_time,
     last_used_reaction,
@@ -30,6 +33,7 @@ from group_state import (
     recent_bot_texts,
     recent_messages,
     refresh_hour_bucket,
+    is_owner_username,
 )
 from settings import (
     BOT_NAME,
@@ -493,6 +497,28 @@ def is_special_praise_target(text: str) -> bool:
     return any(alias in normalized for alias in SPECIAL_PRAISE_ALIASES)
 
 
+OWNER_MEMORY_COMMAND_RE = re.compile(
+    r"^\s*(?:запомни|запиши|сохрани|remember|save)\s*(?:это|that)?(?:\s*[:\-–—]\s*|\s+)?(?P<note>.+?)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def extract_owner_memory_note(text: str) -> str | None:
+    raw = " ".join((text or "").strip().split())
+    if not raw:
+        return None
+
+    match = OWNER_MEMORY_COMMAND_RE.match(raw)
+    if not match:
+        return None
+
+    note = " ".join((match.group("note") or "").split()).strip(" .,!?:;\"'")
+    if not note or note.lower() in {"это", "that"}:
+        return None
+
+    return note
+
+
 def recent_discussion_bonus(chat_id: int) -> float:
     messages = list(recent_messages[chat_id])[-8:]
     if len(messages) < 4:
@@ -837,6 +863,24 @@ async def handle_group_message(event):
     if not cleaned.strip():
         return
 
+    is_owner = is_owner_username(sender)
+    owner_memory_raw = " ".join((text or "").strip().split())
+    owner_memory_match = OWNER_MEMORY_COMMAND_RE.match(owner_memory_raw) if is_owner else None
+    if is_owner and owner_memory_match:
+        owner_memory_note = extract_owner_memory_note(text)
+        if owner_memory_note:
+            add_owner_memory_note(owner_memory_note)
+            await send_text(event, "Запомнил.")
+            print(json.dumps({
+                "chat_id": chat_id,
+                "text": text,
+                "action": "owner_memory_saved",
+                "note": owner_memory_note,
+            }, ensure_ascii=False))
+        else:
+            await send_text(event, "Скажи, что именно запомнить.")
+        return
+
     if contains_blacklisted(cleaned):
         last_message_time[chat_id] = time.time()
         recent_messages[chat_id].append(cleaned)
@@ -848,6 +892,8 @@ async def handle_group_message(event):
     last_message_time[chat_id] = time.time()
     recent_messages[chat_id].append(display_message)
     chat_memory = build_chat_memory(chat_id)
+    if is_owner and (owner_memory_context := build_owner_memory_context()):
+        chat_memory = f"{chat_memory}\n\nЛичные заметки владельца:\n{owner_memory_context}" if chat_memory else f"Личные заметки владельца:\n{owner_memory_context}"
 
     reply_to_bot = False
     if event.is_reply:

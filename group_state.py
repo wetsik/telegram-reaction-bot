@@ -1,7 +1,15 @@
+import json
 import time
 from collections import defaultdict, deque
+from pathlib import Path
 
-from settings import RECENT_BOT_TEXTS_LIMIT, RECENT_MSGS_LIMIT, USER_MEMORY_LIMIT
+from settings import (
+    OUTPUTS_DIR,
+    OWNER_USERNAME,
+    RECENT_BOT_TEXTS_LIMIT,
+    RECENT_MSGS_LIMIT,
+    USER_MEMORY_LIMIT,
+)
 
 
 recent_messages = defaultdict(lambda: deque(maxlen=RECENT_MSGS_LIMIT))
@@ -25,6 +33,61 @@ reaction_memory_by_chat = defaultdict(lambda: {
     "allowed": set(),
     "blocked": set(),
 })
+
+OWNER_MEMORY_FILE = OUTPUTS_DIR / "owner_memory.json"
+owner_memory_notes = deque(maxlen=200)
+
+
+def _ensure_outputs_dir():
+    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _load_owner_memory():
+    try:
+        if OWNER_MEMORY_FILE.exists():
+            data = json.loads(OWNER_MEMORY_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, str) and item.strip():
+                        owner_memory_notes.append(item.strip())
+    except Exception as error:
+        print(f"Owner memory load error: {error}")
+
+
+def _save_owner_memory():
+    try:
+        _ensure_outputs_dir()
+        payload = list(owner_memory_notes)
+        tmp_file = OWNER_MEMORY_FILE.with_suffix(".json.tmp")
+        tmp_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_file.replace(OWNER_MEMORY_FILE)
+    except Exception as error:
+        print(f"Owner memory save error: {error}")
+
+
+def is_owner_username(sender) -> bool:
+    username = getattr(sender, "username", None)
+    return bool(username and username.lower() == OWNER_USERNAME.lower())
+
+
+def add_owner_memory_note(note: str):
+    cleaned = " ".join(note.strip().split())
+    if not cleaned:
+        return
+
+    owner_memory_notes.append(cleaned)
+    _save_owner_memory()
+
+
+def build_owner_memory_context(limit: int = 10) -> str:
+    notes = list(owner_memory_notes)[-limit:]
+    if not notes:
+        return ""
+
+    return "\n".join(f"- {note}" for note in notes)
+
+
+_load_owner_memory()
 
 
 def refresh_hour_bucket(chat_id: int):
