@@ -310,6 +310,28 @@ def looks_like_followup(text: str) -> bool:
     return t in followups or t.startswith(("и че ", "и чо ", "и что ", "а дальше "))
 
 
+def looks_like_insult(text: str) -> bool:
+    t = clean_text(text)
+    insult_words = (
+        "лох",
+        "тупой",
+        "тупая",
+        "тупица",
+        "долбаеб",
+        "долбоеб",
+        "дурак",
+        "идиот",
+        "кринж",
+        "ботяра",
+        "плохой бот",
+        "говно",
+        "хуйня",
+        "слабый",
+        "заткнись",
+    )
+    return any(word in t for word in insult_words)
+
+
 def should_send_reaction(
     chat_id: int,
     text: str,
@@ -370,26 +392,31 @@ def should_send_text(
     state = chat_state[chat_id]
 
     if is_greeting_for_bot(text, mentioned):
-        if now - state["last_text_at"] < 30:
+        if now - state["last_text_at"] < 2:
             return False
         return True
 
     if mentioned:
-        if now - state["last_text_at"] < 5:
+        if now - state["last_text_at"] < 2:
             return False
         return True
 
     if state["texts_in_last_hour"] >= MAX_TEXTS_PER_HOUR:
         return False
 
-    if now - state["last_text_at"] < TEXT_COOLDOWN:
+    if TEXT_COOLDOWN > 0 and now - state["last_text_at"] < TEXT_COOLDOWN:
         return False
 
     if len(text.strip()) < MIN_TEXT_LEN and not mentioned:
         return False
 
-    if label == "question" or looks_like_question(text) or looks_like_followup(text):
-        if now - state["last_text_at"] < 45:
+    if (
+        label == "question"
+        or looks_like_question(text)
+        or looks_like_followup(text)
+        or looks_like_insult(text)
+    ):
+        if now - state["last_text_at"] < 2:
             return False
         return True
 
@@ -656,8 +683,26 @@ async def handle_group_message(event):
     recent_messages[chat_id].append(display_message)
     chat_memory = build_chat_memory(chat_id)
 
+    reply_to_bot = False
+    if event.is_reply:
+        try:
+            replied = await event.get_reply_message()
+            reply_to_bot = bool(
+                replied
+                and (
+                    getattr(replied, "sender_id", None) == getattr(me, "id", None)
+                    or getattr(replied, "out", False)
+                )
+            )
+        except Exception as reply_error:
+            print(f"Reply context error: {reply_error}")
+
     is_private_chat = bool(event.is_private)
-    mentioned = is_private_chat or any(name and name.lower() in cleaned for name in BOT_NAME_HINTS)
+    mentioned = (
+        is_private_chat
+        or reply_to_bot
+        or any(name and name.lower() in cleaned for name in BOT_NAME_HINTS)
+    )
     context_messages = list(recent_messages[chat_id])
 
     rule_label, rule_confidence, _ = score_with_rules(text, context_messages)

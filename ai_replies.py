@@ -48,6 +48,7 @@ async def generate_context_reply(
         "For simple chat, keep it short. "
         "For real questions, answer normally and explain in simple casual words. "
         "For educational questions, give a clear useful answer in 1-4 short sentences. "
+        "If someone insults or challenges you, answer back naturally and briefly. "
         "Light sarcasm is ok when it fits, but do not force jokes or roasts. "
         "No cringe phrases like 'botik', 'living bot', 'what will you tell me', theatrical hype, or fake enthusiasm. "
         "Do not sound like customer support or a textbook. "
