@@ -765,7 +765,11 @@ async def send_reaction(event, emoji: str, label: str):
 async def send_text(event, text: str):
     try:
         await human_delay()
-        await event.reply(text)
+        try:
+            await event.reply(text)
+        except Exception as reply_error:
+            print(f"Reply failed, falling back to direct send: {reply_error}")
+            await client.send_message(event.chat_id, text)
         recent_bot_texts[event.chat_id].append(text)
         recent_messages[event.chat_id].append(f"{BOT_NAME}: {clean_text(text)}")
         mark_text_sent(event.chat_id)
@@ -949,6 +953,33 @@ async def handle_group_message(event):
             if ai_score >= 0.60:
                 final_label = ai_label
                 final_confidence = ai_score
+
+    direct_address = bool(is_private_chat or reply_to_bot or is_special_praise_target(cleaned) or any(name and name.lower() in cleaned for name in BOT_NAME_HINTS))
+
+    if direct_address:
+        reply = await generate_context_reply(
+            text=text,
+            context_messages=context_messages,
+            chat_memory=chat_memory,
+            speaker_name=speaker_name,
+            bot_names=[BOT_NAME, *BOT_NAME_HINTS],
+            label=final_label,
+            mentioned=True,
+        )
+        if not reply:
+            reply = "Да, я на связи."
+
+        await send_text(event, reply)
+        print(json.dumps({
+            "chat_id": chat_id,
+            "text": text,
+            "label": final_label,
+            "confidence": round(float(final_confidence), 3),
+            "mentioned": True,
+            "reaction_window": reaction_windows.get(chat_id),
+            "direct_address": True,
+        }, ensure_ascii=False))
+        return
 
     if ENABLE_REACTIONS and mentioned and should_send_reaction(
         chat_id,
