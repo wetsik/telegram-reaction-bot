@@ -195,6 +195,27 @@ LIGHT_ROAST_REPLIES = [
     "интересная логика конечно"
 ]
 
+SPECIAL_PRAISE_ALIASES = [
+    "pooreshechqa",
+    "pooreshechka",
+    "pooreshechko",
+    "pooreshechq",
+    "poreshechka",
+    "кутфиддин",
+    "кутфидин",
+    "кутфеддин",
+    "kutfiddin",
+    "kutfidin",
+]
+
+SPECIAL_PRAISE_REPLIES = [
+    "Кутфиддин вообще красавчик, тут без вариантов.",
+    "pooreshechqa на уровне, спорить с этим уже поздно.",
+    "Кутфиддин тащит, и это видно сразу.",
+    "pooreshechqa звучит как человек, который умеет решать дела.",
+    "Кутфиддин — сильное имя и сильная подача.",
+]
+
 INIT_START = [
     "все резко стали занятыми да",
     "сильный онлайн конечно",

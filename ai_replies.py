@@ -1,8 +1,10 @@
 import base64
 import json
+import random
 
 import aiohttp
 
+from group_data import SPECIAL_PRAISE_ALIASES, SPECIAL_PRAISE_REPLIES
 from settings import ENABLE_OPENAI_REPLIES, OPENAI_API_KEY, OPENAI_MODEL
 
 
@@ -22,6 +24,22 @@ def _clean_reply(text: str) -> str:
     return text.strip("\"' ")
 
 
+def _normalize_name_text(text: str) -> str:
+    return (
+        text.strip().lower()
+        .replace("@", "")
+        .replace("ё", "е")
+        .replace("-", "")
+        .replace("_", "")
+        .replace(".", "")
+    )
+
+
+def _is_special_praise_target(text: str) -> bool:
+    normalized = _normalize_name_text(text)
+    return bool(normalized) and any(alias in normalized for alias in SPECIAL_PRAISE_ALIASES)
+
+
 async def generate_context_reply(
     *,
     text: str,
@@ -36,6 +54,9 @@ async def generate_context_reply(
     # В основном обработчике mentioned должен быть True для @упоминания ИЛИ reply на бота.
     if not mentioned:
         return None
+
+    if _is_special_praise_target(text):
+        return random.choice(SPECIAL_PRAISE_REPLIES)
 
     if not ENABLE_OPENAI_REPLIES or not OPENAI_API_KEY:
         return OPENAI_NOT_CONFIGURED_REPLY
@@ -68,6 +89,7 @@ async def generate_context_reply(
         "Avoid long self-defense. Avoid explaining why you replied unless asked. "
         "Only reply when you are directly mentioned or someone replies to your message. "
         "If directly mentioned or replied to, always reply. "
+        "If the message mentions the owner's custom aliases, keep the tone openly positive and complimentary. "
         "Pay attention to who said what. Short follow-ups like 'and what' or 'so what' often refer to the previous bot reply."
     )
 

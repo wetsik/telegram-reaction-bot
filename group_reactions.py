@@ -15,6 +15,7 @@ from group_data import (
     INIT_START,
     REACTIONS,
     SAFE_EMOJIS,
+    SPECIAL_PRAISE_ALIASES,
 )
 from group_state import (
     build_chat_memory,
@@ -473,6 +474,25 @@ def looks_like_debate(text: str) -> bool:
     return any(marker in t for marker in debate_markers)
 
 
+def _normalize_name_text(text: str) -> str:
+    return (
+        clean_text(text)
+        .replace("@", "")
+        .replace("ё", "е")
+        .replace("-", "")
+        .replace("_", "")
+        .replace(".", "")
+    )
+
+
+def is_special_praise_target(text: str) -> bool:
+    normalized = _normalize_name_text(text)
+    if not normalized:
+        return False
+
+    return any(alias in normalized for alias in SPECIAL_PRAISE_ALIASES)
+
+
 def recent_discussion_bonus(chat_id: int) -> float:
     messages = list(recent_messages[chat_id])[-8:]
     if len(messages) < 4:
@@ -848,6 +868,7 @@ async def handle_group_message(event):
         is_private_chat
         or reply_to_bot
         or any(name and name.lower() in cleaned for name in BOT_NAME_HINTS)
+        or is_special_praise_target(cleaned)
     )
     context_messages = list(recent_messages[chat_id])
 
@@ -883,7 +904,7 @@ async def handle_group_message(event):
                 final_label = ai_label
                 final_confidence = ai_score
 
-    if ENABLE_REACTIONS and should_send_reaction(
+    if ENABLE_REACTIONS and mentioned and should_send_reaction(
         chat_id,
         text,
         final_label,
