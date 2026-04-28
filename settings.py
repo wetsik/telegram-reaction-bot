@@ -8,6 +8,11 @@ SESSION_STRING = os.environ["SESSION_STRING"]
 
 PORT = int(os.environ.get("PORT", "10000"))
 HF_API_TOKEN = os.environ.get("HF_API_TOKEN", "").strip()
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini").strip()
+ENABLE_OPENAI_REPLIES = os.environ.get(
+    "ENABLE_OPENAI_REPLIES", "true"
+).lower() == "true"
 
 DOWNLOADS_DIR = Path("downloads")
 OUTPUTS_DIR = Path("outputs")
@@ -28,6 +33,11 @@ VOCAL_PROGRESS_UPDATE_INTERVAL = int(os.environ.get("VOCAL_PROGRESS_UPDATE_INTER
 VOCAL_SEPARATION_TIMEOUT_SECONDS = int(os.environ.get("VOCAL_SEPARATION_TIMEOUT_SECONDS", "3600"))
 VOCAL_DEMUCS_STALL_TIMEOUT_SECONDS = int(os.environ.get("VOCAL_DEMUCS_STALL_TIMEOUT_SECONDS", "900"))
 VOCAL_SEND_TIMEOUT_SECONDS = int(os.environ.get("VOCAL_SEND_TIMEOUT_SECONDS", "1800"))
+VOCAL_DEMUCS_MODELS = [
+    item.strip()
+    for item in os.environ.get("VOCAL_DEMUCS_MODELS", "mdx_q,mdx_extra_q,htdemucs").split(",")
+    if item.strip()
+]
 
 TZ_OFFSET = int(os.environ.get("TZ_OFFSET", "5"))
 
@@ -35,13 +45,13 @@ MIN_DELAY = float(os.environ.get("MIN_DELAY", "0.25"))
 MAX_DELAY = float(os.environ.get("MAX_DELAY", "0.9"))
 
 REACTION_CHANCE = float(os.environ.get("REACTION_CHANCE", "0.98"))
-TEXT_REPLY_CHANCE = float(os.environ.get("TEXT_REPLY_CHANCE", "0.55"))
-MENTION_REPLY_CHANCE = float(os.environ.get("MENTION_REPLY_CHANCE", "8"))
+TEXT_REPLY_CHANCE = float(os.environ.get("TEXT_REPLY_CHANCE", "0.10"))
+MENTION_REPLY_CHANCE = float(os.environ.get("MENTION_REPLY_CHANCE", "0.85"))
 
-TEXT_COOLDOWN = int(os.environ.get("TEXT_COOLDOWN", "20"))
+TEXT_COOLDOWN = int(os.environ.get("TEXT_COOLDOWN", "180"))
 REACTION_COOLDOWN = int(os.environ.get("REACTION_COOLDOWN", "0"))
 
-MAX_TEXTS_PER_HOUR = int(os.environ.get("MAX_TEXTS_PER_HOUR", "40"))
+MAX_TEXTS_PER_HOUR = int(os.environ.get("MAX_TEXTS_PER_HOUR", "6"))
 MAX_REACTIONS_PER_HOUR = int(os.environ.get("MAX_REACTIONS_PER_HOUR", "160"))
 
 RECENT_MSGS_LIMIT = int(os.environ.get("RECENT_MSGS_LIMIT", "35"))
@@ -71,6 +81,6 @@ BOT_STAGE = "stable"
 
 ENABLE_REACTIONS = True
 ENABLE_TEXT_REPLIES = True
-MIN_TEXT_LEN = 1
+MIN_TEXT_LEN = 12
 QUIET_HOURS = set()
 BOT_NAME_HINTS = ["bot"]

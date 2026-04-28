@@ -16,5 +16,11 @@ services:
         sync: false
       - key: HF_API_TOKEN
         sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4.1-mini
+      - key: ENABLE_OPENAI_REPLIES
+        value: "true"
 
     autoDeploy: true

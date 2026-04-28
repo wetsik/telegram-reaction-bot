@@ -6,6 +6,7 @@ import time
 from telethon import functions, types
 from telethon.errors import FloodWaitError
 
+from ai_replies import generate_context_reply
 from group_data import (
     BLACKLIST_CONTAINS,
     GREETING_WORDS,
@@ -81,17 +82,42 @@ REACTION_LABEL_CHANCE = {
 }
 reaction_windows = {}
 
+# Text replies use a separate soft budget. This avoids the blunt
+# "one message every N messages" pattern: some windows stay silent,
+# and replies still need a good conversational fit.
+TEXT_WINDOW_SIZE = 70
+TEXT_BUDGET_WEIGHTS = ((0, 0.45), (1, 0.42), (2, 0.13))
+TEXT_MIN_MESSAGES_GAP = 18
+TEXT_LABEL_CHANCE = {
+    "funny": 0.36,
+    "shock": 0.30,
+    "question": 0.42,
+    "hype": 0.28,
+    "agreement": 0.18,
+    "disagreement": 0.24,
+    "anger": 0.20,
+    "sad": 0.22,
+    "love": 0.16,
+    "greeting": 0.14,
+    "neutral": 0.03,
+}
+text_windows = {}
+
 
 def _pick_reaction_budget() -> int:
     budgets, weights = zip(*REACTION_BUDGET_WEIGHTS)
     return random.choices(budgets, weights=weights, k=1)[0]
 
 
-def _pick_reaction_slots(budget: int) -> list[int]:
+def _pick_slots(budget: int, window_size: int) -> list[int]:
     if budget <= 0:
         return []
 
-    return sorted(random.sample(range(1, REACTION_WINDOW_SIZE + 1), budget))
+    return sorted(random.sample(range(1, window_size + 1), budget))
+
+
+def _pick_reaction_slots(budget: int) -> list[int]:
+    return _pick_slots(budget, REACTION_WINDOW_SIZE)
 
 
 def _new_reaction_window() -> dict:
@@ -103,6 +129,33 @@ def _new_reaction_window() -> dict:
         "slots": _pick_reaction_slots(budget),
         "last_sent_at_message": -REACTION_MIN_MESSAGES_GAP,
     }
+
+
+def _pick_text_budget() -> int:
+    budgets, weights = zip(*TEXT_BUDGET_WEIGHTS)
+    return random.choices(budgets, weights=weights, k=1)[0]
+
+
+def _new_text_window() -> dict:
+    budget = _pick_text_budget()
+    return {
+        "messages": 0,
+        "sent": 0,
+        "budget": budget,
+        "slots": _pick_slots(budget, TEXT_WINDOW_SIZE),
+        "last_sent_at_message": -TEXT_MIN_MESSAGES_GAP,
+    }
+
+
+def _advance_text_window(chat_id: int) -> dict:
+    window = text_windows.setdefault(chat_id, _new_text_window())
+
+    if window["messages"] >= TEXT_WINDOW_SIZE:
+        window = _new_text_window()
+        text_windows[chat_id] = window
+
+    window["messages"] += 1
+    return window
 
 
 def _advance_reaction_window(chat_id: int) -> dict:
@@ -141,6 +194,36 @@ def _reaction_fit_score(text: str, label: str, confidence: float, mentioned: boo
         base *= 0.75
 
     if mentioned:
+        base *= 0.65
+
+    return max(0.0, min(base, 1.0))
+
+
+def _text_fit_score(text: str, label: str, confidence: float, mentioned: bool) -> float:
+    stripped = text.strip()
+    if mentioned:
+        return 1.0
+
+    if len(stripped) < MIN_TEXT_LEN:
+        return 0.0
+
+    if len(stripped.split()) < 3 and not stripped.endswith("?"):
+        return 0.0
+
+    base = TEXT_LABEL_CHANCE.get(label, TEXT_LABEL_CHANCE["neutral"])
+
+    if label == "neutral":
+        return 0.0
+
+    if confidence >= 1.4:
+        base += 0.08
+    elif confidence < 1.0:
+        base *= 0.45
+
+    if stripped.endswith("?"):
+        base += 0.10
+
+    if len(stripped) > 220:
         base *= 0.65
 
     return max(0.0, min(base, 1.0))
@@ -266,31 +349,51 @@ def should_send_reaction(
     return random.random() < min(chance, 1.0)
 
 
-def should_send_text(chat_id: int, text: str, mentioned: bool, label: str) -> bool:
+def should_send_text(
+    chat_id: int,
+    text: str,
+    mentioned: bool,
+    label: str,
+    confidence: float,
+) -> bool:
     now = int(time.time())
     hour = get_local_hour()
     refresh_hour_bucket(chat_id)
 
     state = chat_state[chat_id]
+    window = _advance_text_window(chat_id)
+
+    if state["texts_in_last_hour"] >= MAX_TEXTS_PER_HOUR:
+        return False
 
     if is_greeting_for_bot(text, mentioned):
-        if now - state["last_text_at"] < 3:
+        if now - state["last_text_at"] < 30:
             return False
         return True
 
     if now - state["last_text_at"] < TEXT_COOLDOWN:
         return False
 
-    if state["texts_in_last_hour"] >= MAX_TEXTS_PER_HOUR:
-        return False
-
     if len(text.strip()) < MIN_TEXT_LEN and not mentioned:
         return False
 
-    chance = MENTION_REPLY_CHANCE if mentioned else TEXT_REPLY_CHANCE
+    if not mentioned:
+        if window["sent"] >= window["budget"]:
+            return False
 
-    if label in {"funny", "shock", "question", "hype", "agreement", "disagreement"}:
-        chance += 0.12
+        if window["messages"] - window["last_sent_at_message"] < TEXT_MIN_MESSAGES_GAP:
+            return False
+
+        next_slot = window["slots"][window["sent"]]
+        if window["messages"] < next_slot:
+            return False
+
+    fit_score = _text_fit_score(text, label, confidence, mentioned)
+    if fit_score <= 0:
+        return False
+
+    chance = MENTION_REPLY_CHANCE if mentioned else TEXT_REPLY_CHANCE
+    chance *= fit_score
 
     chance += recent_activity_bonus(chat_id)
 
@@ -447,6 +550,11 @@ async def send_text(event, text: str):
         await event.respond(text)
         recent_bot_texts[event.chat_id].append(text)
         mark_text_sent(event.chat_id)
+
+        window = text_windows.setdefault(event.chat_id, _new_text_window())
+        window["sent"] += 1
+        window["last_sent_at_message"] = window["messages"]
+
         print(f"Sent text '{text}' to chat {event.chat_id}")
 
     except FloodWaitError as e:
@@ -587,8 +695,21 @@ async def handle_group_message(event):
         emoji = pick_reaction_by_label(chat_id, final_label)
         await send_reaction(event, emoji, final_label)
 
-    if ENABLE_TEXT_REPLIES and should_send_text(chat_id, text, mentioned, final_label):
-        reply = pick_reply_by_label(chat_id, final_label, text)
+    if ENABLE_TEXT_REPLIES and should_send_text(
+        chat_id,
+        text,
+        mentioned,
+        final_label,
+        float(final_confidence),
+    ):
+        reply = await generate_context_reply(
+            text=text,
+            context_messages=context_messages,
+            label=final_label,
+            mentioned=mentioned,
+        )
+        if not reply:
+            reply = pick_reply_by_label(chat_id, final_label, text)
         await send_text(event, reply)
 
     print(json.dumps({
@@ -598,6 +719,7 @@ async def handle_group_message(event):
         "confidence": round(float(final_confidence), 3),
         "mentioned": mentioned,
         "reaction_window": reaction_windows.get(chat_id),
+        "text_window": text_windows.get(chat_id),
     }, ensure_ascii=False))
 
 
