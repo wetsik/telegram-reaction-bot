@@ -79,16 +79,10 @@ REACTION_LABEL_CHANCE = {
 }
 reaction_windows = {}
 
-# Text replies use a separate soft budget. This avoids the blunt
-# "one message every N messages" pattern: some windows stay silent,
-# and replies still need a good conversational fit.
-TEXT_WINDOW_SIZE = 70
-TEXT_BUDGET_WEIGHTS = ((0, 0.45), (1, 0.42), (2, 0.13))
-TEXT_MIN_MESSAGES_GAP = 18
 TEXT_LABEL_CHANCE = {
     "funny": 0.36,
     "shock": 0.30,
-    "question": 0.42,
+    "question": 0.90,
     "hype": 0.28,
     "agreement": 0.18,
     "disagreement": 0.24,
@@ -98,7 +92,6 @@ TEXT_LABEL_CHANCE = {
     "greeting": 0.14,
     "neutral": 0.03,
 }
-text_windows = {}
 
 
 def _pick_reaction_budget() -> int:
@@ -126,33 +119,6 @@ def _new_reaction_window() -> dict:
         "slots": _pick_reaction_slots(budget),
         "last_sent_at_message": -REACTION_MIN_MESSAGES_GAP,
     }
-
-
-def _pick_text_budget() -> int:
-    budgets, weights = zip(*TEXT_BUDGET_WEIGHTS)
-    return random.choices(budgets, weights=weights, k=1)[0]
-
-
-def _new_text_window() -> dict:
-    budget = _pick_text_budget()
-    return {
-        "messages": 0,
-        "sent": 0,
-        "budget": budget,
-        "slots": _pick_slots(budget, TEXT_WINDOW_SIZE),
-        "last_sent_at_message": -TEXT_MIN_MESSAGES_GAP,
-    }
-
-
-def _advance_text_window(chat_id: int) -> dict:
-    window = text_windows.setdefault(chat_id, _new_text_window())
-
-    if window["messages"] >= TEXT_WINDOW_SIZE:
-        window = _new_text_window()
-        text_windows[chat_id] = window
-
-    window["messages"] += 1
-    return window
 
 
 def _advance_reaction_window(chat_id: int) -> dict:
@@ -285,11 +251,7 @@ def pick_from_pool_avoiding_repeat(chat_id: int, pool: list[str], storage: dict)
 
 
 def pick_reply_by_label(chat_id: int, label: str, text: str) -> str:
-    if should_roast(text, label):
-        return pick_from_pool_avoiding_repeat(chat_id, LIGHT_ROAST_REPLIES, last_used_reply)
-
-    pool = TEXT_REPLIES.get(label, TEXT_REPLIES["neutral"])
-    return pick_from_pool_avoiding_repeat(chat_id, pool, last_used_reply)
+    return ""
 
 
 def is_greeting_for_bot(text: str, mentioned: bool) -> bool:
@@ -298,6 +260,33 @@ def is_greeting_for_bot(text: str, mentioned: bool) -> bool:
 
     t = clean_text(text)
     return any(word in t for word in GREETING_WORDS)
+
+
+def looks_like_question(text: str) -> bool:
+    t = clean_text(text)
+    if t.endswith("?"):
+        return True
+
+    question_words = (
+        "как",
+        "что",
+        "чо",
+        "че",
+        "почему",
+        "зачем",
+        "когда",
+        "где",
+        "куда",
+        "кто",
+        "сколько",
+        "какой",
+        "какая",
+        "какие",
+        "можно",
+        "надо",
+    )
+    words = set(t.replace(",", " ").replace(".", " ").split())
+    return any(word in words for word in question_words)
 
 
 def should_send_reaction(
@@ -358,7 +347,6 @@ def should_send_text(
     refresh_hour_bucket(chat_id)
 
     state = chat_state[chat_id]
-    window = _advance_text_window(chat_id)
 
     if is_greeting_for_bot(text, mentioned):
         if now - state["last_text_at"] < 30:
@@ -379,16 +367,10 @@ def should_send_text(
     if len(text.strip()) < MIN_TEXT_LEN and not mentioned:
         return False
 
-    if not mentioned:
-        if window["sent"] >= window["budget"]:
+    if label == "question" or looks_like_question(text):
+        if now - state["last_text_at"] < 45:
             return False
-
-        if window["messages"] - window["last_sent_at_message"] < TEXT_MIN_MESSAGES_GAP:
-            return False
-
-        next_slot = window["slots"][window["sent"]]
-        if window["messages"] < next_slot:
-            return False
+        return True
 
     fit_score = _text_fit_score(text, label, confidence, mentioned)
     if fit_score <= 0:
@@ -552,10 +534,6 @@ async def send_text(event, text: str):
         await event.respond(text)
         recent_bot_texts[event.chat_id].append(text)
         mark_text_sent(event.chat_id)
-
-        window = text_windows.setdefault(event.chat_id, _new_text_window())
-        window["sent"] += 1
-        window["last_sent_at_message"] = window["messages"]
 
         print(f"Sent text '{text}' to chat {event.chat_id}")
 
@@ -721,7 +699,6 @@ async def handle_group_message(event):
         "confidence": round(float(final_confidence), 3),
         "mentioned": mentioned,
         "reaction_window": reaction_windows.get(chat_id),
-        "text_window": text_windows.get(chat_id),
     }, ensure_ascii=False))
 
 
