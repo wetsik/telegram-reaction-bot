@@ -136,7 +136,7 @@ def _can_reply(connection: types.BotBusinessConnection | None) -> bool:
     if getattr(connection, "disabled", False):
         return False
     rights = getattr(connection, "rights", None)
-    return bool(getattr(rights, "can_reply", False))
+    return bool(getattr(rights, "reply", False) or getattr(rights, "can_reply", False))
 
 
 async def _handle_new_business_message(update) -> None:
@@ -153,7 +153,7 @@ async def _handle_new_business_message(update) -> None:
                     "event": "business_skip_no_reply_rights",
                     "connection_id": connection_id,
                     "has_connection": bool(connection),
-                    "can_reply": bool(getattr(getattr(connection, "rights", None), "can_reply", False)) if connection else False,
+                    "can_reply": bool(getattr(getattr(connection, "rights", None), "reply", False) or getattr(getattr(connection, "rights", None), "can_reply", False)) if connection else False,
                     "disabled": bool(getattr(connection, "disabled", False)) if connection else None,
                     "rights": _tl_debug(getattr(connection, "rights", None)) if connection else None,
                     "recipients": _tl_debug(getattr(connection, "recipients", None)) if connection else None,
