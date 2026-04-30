@@ -28,6 +28,35 @@ def _peer_user_id(peer) -> int | None:
     return getattr(peer, "user_id", None)
 
 
+def _tl_debug(value):
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple, set)):
+        return [_tl_debug(item) for item in value]
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        try:
+            return to_dict()
+        except Exception:
+            pass
+    result = {}
+    for key in dir(value):
+        if key.startswith("_"):
+            continue
+        try:
+            item = getattr(value, key)
+        except Exception:
+            continue
+        if callable(item):
+            continue
+        if key in {"stringify", "to_dict", "serialize"}:
+            continue
+        result[key] = _tl_debug(item)
+    return result
+
+
 async def _get_business_connection(connection_id: str) -> types.BotBusinessConnection | None:
     connection = BUSINESS_CONNECTIONS.get(connection_id)
     if connection is not None:
@@ -126,6 +155,8 @@ async def _handle_new_business_message(update) -> None:
                     "has_connection": bool(connection),
                     "can_reply": bool(getattr(getattr(connection, "rights", None), "can_reply", False)) if connection else False,
                     "disabled": bool(getattr(connection, "disabled", False)) if connection else None,
+                    "rights": _tl_debug(getattr(connection, "rights", None)) if connection else None,
+                    "recipients": _tl_debug(getattr(connection, "recipients", None)) if connection else None,
                 },
                 ensure_ascii=False,
             )
@@ -203,6 +234,8 @@ async def handle_raw(event):
                     "connection_id": getattr(connection, "connection_id", None),
                     "user_id": getattr(connection, "user_id", None),
                     "disabled": bool(getattr(connection, "disabled", False)),
+                    "rights": _tl_debug(getattr(connection, "rights", None)),
+                    "recipients": _tl_debug(getattr(connection, "recipients", None)),
                 },
                 ensure_ascii=False,
             )
