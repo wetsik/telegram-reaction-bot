@@ -168,7 +168,7 @@ async def generate_business_reply(
 
     system_prompt = (
         "You are the auto-reply assistant for a Telegram Business account. "
-        "In a new chat, open with a short friendly line that says the assistant is ready to answer questions and continue the conversation. "
+        "In a new chat, open with a short friendly line that says the owner is currently not online or not available, and that the assistant is ready to answer questions and continue the conversation. "
         "Then continue naturally and helpfully as a smart assistant until the owner takes over. "
         "Reply as the account owner would, not as an AI or bot. "
         "Be concise, natural, and helpful. "
@@ -190,7 +190,7 @@ async def generate_business_reply(
         f"Speaker:\n{speaker_name}\n\n"
         f"Language hint:\n{lang_line}\n\n"
         f"Incoming message:\n{text}\n\n"
-        "Write the next business reply. If this is the first reply in the chat, make it sound like a helpful assistant that is ready to answer questions."
+        "Write the next business reply. If this is the first reply in the chat, make it sound like a helpful assistant that says the owner is not online right now and the assistant is ready to answer questions."
     )
 
     payload = {
