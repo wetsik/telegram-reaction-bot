@@ -158,9 +158,7 @@ async def _handle_new_business_message(update) -> None:
 
 @client.on(events.Raw())
 async def handle_raw(event):
-    update = getattr(event, "update", None) or getattr(event, "_raw", None)
-    if update is None:
-        return
+    update = event
 
     if isinstance(update, types.UpdateBotBusinessConnect):
         connection = getattr(update, "connection", None)
