@@ -3,20 +3,18 @@ import contextlib
 import json
 import random
 from collections import defaultdict, deque
-from pathlib import Path
 
 from telethon import TelegramClient, events, functions, types
 from telethon.errors import RPCError
 from telethon.sessions import StringSession
 
-from greeting_texts import build_greeting_text
+from ai_replies import generate_business_reply
+from business_state import has_business_chat_responded
 from settings import API_HASH, API_ID, BOT_NAME, BOT_STAGE, BOT_TOKEN, BOT_VERSION, OUTPUTS_DIR
 
 
 BUSINESS_CONNECTIONS: dict[str, types.BotBusinessConnection] = {}
 BUSINESS_CONTEXT: dict[str, deque[str]] = defaultdict(lambda: deque(maxlen=12))
-BUSINESS_GREETED_USERS_FILE = OUTPUTS_DIR / "business_greeted_users.json"
-BUSINESS_GREETED_USER_IDS: set[int] = set()
 client = TelegramClient(StringSession(), API_ID, API_HASH)
 
 
@@ -28,29 +26,6 @@ def _peer_user_id(peer) -> int | None:
     if peer is None:
         return None
     return getattr(peer, "user_id", None)
-
-
-def _load_greeted_users() -> None:
-    try:
-        if BUSINESS_GREETED_USERS_FILE.exists():
-            data = json.loads(BUSINESS_GREETED_USERS_FILE.read_text(encoding="utf-8"))
-            if isinstance(data, list):
-                for item in data:
-                    if isinstance(item, int):
-                        BUSINESS_GREETED_USER_IDS.add(item)
-    except Exception as error:
-        print(f"Business greeting load error: {error}")
-
-
-def _save_greeted_users() -> None:
-    try:
-        _ensure_outputs_dir()
-        payload = sorted(BUSINESS_GREETED_USER_IDS)
-        tmp_file = BUSINESS_GREETED_USERS_FILE.with_suffix(".json.tmp")
-        tmp_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp_file.replace(BUSINESS_GREETED_USERS_FILE)
-    except Exception as error:
-        print(f"Business greeting save error: {error}")
 
 
 def _tl_debug(value):
@@ -203,7 +178,9 @@ async def _handle_new_business_message(update) -> None:
     if sender_id is None:
         return
 
-    if sender_id in BUSINESS_GREETED_USER_IDS:
+    chat_id = getattr(message, "peer_id", None)
+    chat_id = getattr(chat_id, "user_id", None) if chat_id is not None else None
+    if chat_id is not None and has_business_chat_responded(int(chat_id)):
         return
 
     text = (getattr(message, "message", None) or "").strip()
@@ -219,7 +196,16 @@ async def _handle_new_business_message(update) -> None:
         sender = await client.get_entity(message.from_id)
 
     lang_code = getattr(sender, "lang_code", None)
-    greeting = build_greeting_text(lang_code, text)
+    speaker_name = getattr(sender, "first_name", None) or getattr(sender, "username", None) or "unknown"
+    chat_context = list(BUSINESS_CONTEXT[connection_id])[-8:]
+    greeting = await generate_business_reply(
+        text=text,
+        chat_context=chat_context,
+        speaker_name=speaker_name,
+        language_hint=lang_code,
+    )
+    if not greeting:
+        return
 
     try:
         await _send_business_reply(connection_id, message, greeting)
@@ -233,7 +219,7 @@ async def _handle_new_business_message(update) -> None:
     print(
         json.dumps(
             {
-                "event": "business_greeted_once",
+                "event": "business_auto_replied",
                 "connection_id": connection_id,
                 "sender_id": sender_id,
                 "lang_code": lang_code,
@@ -242,9 +228,8 @@ async def _handle_new_business_message(update) -> None:
             ensure_ascii=False,
         )
     )
-    BUSINESS_GREETED_USER_IDS.add(int(sender_id))
-    _save_greeted_users()
     _push_context(connection_id, "user", text)
+    _push_context(connection_id, "bot", greeting)
 
 
 @client.on(events.Raw())
@@ -298,10 +283,6 @@ async def run_business_bot_forever():
 
         print("Restarting business bot in 5 seconds...")
         await asyncio.sleep(5)
-
-
-_load_greeted_users()
-
 
 if __name__ == "__main__":
     asyncio.run(run_business_bot_forever())

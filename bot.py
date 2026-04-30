@@ -13,6 +13,7 @@ from group_reactions import (
 )
 from business_tools import handle_private_business_command
 from business_bot import run_business_bot_forever
+from business_state import mark_business_chat_responded
 from health_server import run_health_server
 from settings import (
     API_HASH,
@@ -46,6 +47,9 @@ async def handle_new_message(event):
     try:
         if not event.message:
             return
+
+        if event.out and event.is_private:
+            mark_business_chat_responded(event.chat_id)
 
         if event.is_private:
             await maybe_send_private_greeting(event, client)

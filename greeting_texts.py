@@ -1,16 +1,16 @@
 import re
 
 
-RU_TEMPLATE = "Привет! Спасибо за сообщение. Владелец этого аккаунта скоро ответит."
-EN_TEMPLATE = "Hi! Thanks for your message. The owner of this account will reply soon."
-UZ_LATN_TEMPLATE = "Salom! Xabaringiz uchun rahmat. Bu akkaunt egasi tez orada javob beradi."
-UZ_CYR_TEMPLATE = "Салом! Хабарингиз учун раҳмат. Бу аккаунт эгаси тез орада жавоб беради."
-TR_TEMPLATE = "Merhaba! Mesajın için teşekkürler. Hesap sahibi yakında cevap verecek."
-ES_TEMPLATE = "Hola! Gracias por tu mensaje. El dueño de esta cuenta responderá pronto."
-FR_TEMPLATE = "Salut ! Merci pour votre message. Le propriétaire de ce compte répondra bientôt."
-DE_TEMPLATE = "Hallo! Danke für deine Nachricht. Der Besitzer dieses Kontos antwortet bald."
-PT_TEMPLATE = "Olá! Obrigado pela mensagem. O dono desta conta vai responder em breve."
-AR_TEMPLATE = "مرحباً! شكراً لرسالتك. سيقوم صاحب هذا الحساب بالرد قريباً."
+RU_TEMPLATE = "Привет! Спасибо за сообщение. Владелец этого аккаунта сейчас не на связи, но ответит позже."
+EN_TEMPLATE = "Hi! Thanks for your message. The owner of this account is not available right now, but will reply later."
+UZ_LATN_TEMPLATE = "Salom! Xabaringiz uchun rahmat. Bu akkaunt egasi hozircha band, keyinroq javob beradi."
+UZ_CYR_TEMPLATE = "Салом! Хабарингиз учун раҳмат. Бу аккаунт эгаси ҳозирча банд, кейинроқ жавоб беради."
+TR_TEMPLATE = "Merhaba! Mesajın için teşekkürler. Hesap sahibi şu anda müsait değil, sonra dönecek."
+ES_TEMPLATE = "Hola! Gracias por tu mensaje. El dueño de esta cuenta no está disponible ahora, pero responderá más tarde."
+FR_TEMPLATE = "Salut ! Merci pour votre message. Le propriétaire de ce compte n'est pas disponible pour le moment, mais répondra plus tard."
+DE_TEMPLATE = "Hallo! Danke für deine Nachricht. Der Besitzer dieses Kontos ist gerade nicht erreichbar, antwortet aber später."
+PT_TEMPLATE = "Olá! Obrigado pela mensagem. O dono desta conta não está disponível agora, mas responderá mais tarde."
+AR_TEMPLATE = "مرحبا! شكرا لرسالتك. صاحب هذا الحساب غير متاح الآن، لكنه سيرد لاحقاً."
 
 
 def normalize_lang_code(lang_code: str | None) -> str:
