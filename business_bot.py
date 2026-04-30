@@ -31,9 +31,23 @@ async def _get_business_connection(connection_id: str) -> types.BotBusinessConne
         return connection
 
     try:
-        connection = await client(functions.account.GetBotBusinessConnectionRequest(connection_id))
+        result = await client(functions.account.GetBotBusinessConnectionRequest(connection_id))
     except Exception as error:
         print(f"Business connection fetch failed for {connection_id}: {type(error).__name__}: {error}")
+        return None
+
+    connection = None
+    if isinstance(result, types.BotBusinessConnection):
+        connection = result
+    else:
+        for update in getattr(result, "updates", []) or []:
+            if isinstance(update, types.UpdateBotBusinessConnect):
+                connection = getattr(update, "connection", None)
+                if connection is not None:
+                    break
+
+    if connection is None:
+        print(f"Business connection fetch returned unexpected payload for {connection_id}: {type(result).__name__}")
         return None
 
     BUSINESS_CONNECTIONS[connection_id] = connection
