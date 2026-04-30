@@ -9,6 +9,7 @@ from telethon.errors import RPCError
 from telethon.sessions import StringSession
 
 from ai_replies import generate_business_reply
+from greeting_texts import build_greeting_text
 from business_state import has_business_chat_responded
 from settings import API_HASH, API_ID, BOT_NAME, BOT_STAGE, BOT_TOKEN, BOT_VERSION, OUTPUTS_DIR
 
@@ -138,6 +139,25 @@ def _push_context(connection_id: str, role: str, text: str) -> None:
     BUSINESS_CONTEXT[connection_id].append(f"{role}: {text}")
 
 
+def _looks_like_owner_offline(text: str) -> bool:
+    lowered = (text or "").lower()
+    keywords = (
+        "owner",
+        "владелец",
+        "egasi",
+        "egasi hozir",
+        "не на связи",
+        "not available",
+        "not online",
+        "müsait değil",
+        "pas disponible",
+        "nicht erreichbar",
+        "não está disponível",
+        "غير متاح",
+    )
+    return any(keyword in lowered for keyword in keywords)
+
+
 def _can_reply(connection: types.BotBusinessConnection | None) -> bool:
     if connection is None:
         return False
@@ -198,14 +218,20 @@ async def _handle_new_business_message(update) -> None:
     lang_code = getattr(sender, "lang_code", None)
     speaker_name = getattr(sender, "first_name", None) or getattr(sender, "username", None) or "unknown"
     chat_context = list(BUSINESS_CONTEXT[connection_id])[-8:]
+    first_reply = not chat_context
     greeting = await generate_business_reply(
         text=text,
         chat_context=chat_context,
         speaker_name=speaker_name,
         language_hint=lang_code,
+        first_reply=first_reply,
     )
     if not greeting:
         return
+
+    if first_reply and not _looks_like_owner_offline(greeting):
+        opener = build_greeting_text(lang_code, text)
+        greeting = f"{opener} {greeting}".strip()
 
     try:
         await _send_business_reply(connection_id, message, greeting)

@@ -1,10 +1,12 @@
 import base64
 import json
 import random
+import re
 
 import aiohttp
 
 from group_data import SPECIAL_PRAISE_ALIASES, SPECIAL_PRAISE_REPLIES
+from greeting_texts import detect_script
 from settings import ENABLE_OPENAI_REPLIES, OPENAI_API_KEY, OPENAI_MODEL
 
 
@@ -33,6 +35,19 @@ def _normalize_name_text(text: str) -> str:
         .replace("_", "")
         .replace(".", "")
     )
+
+
+def _infer_business_language(language_hint: str | None, text: str, chat_context: list[str]) -> str:
+    if language_hint:
+        hint = language_hint.strip().lower().replace("_", "-")
+        if hint:
+            return hint
+
+    for candidate in [text, *reversed(chat_context[-6:])]:
+        if candidate and candidate.strip():
+            return detect_script(candidate)
+
+    return "ru"
 
 
 def _is_special_praise_target(text: str) -> bool:
@@ -158,17 +173,18 @@ async def generate_business_reply(
     chat_context: list[str],
     speaker_name: str,
     language_hint: str | None = None,
+    first_reply: bool = False,
 ) -> str | None:
     if not ENABLE_OPENAI_REPLIES or not OPENAI_API_KEY:
         return None
 
     recent = chat_context[-8:]
     context = "\n".join(f"- {message}" for message in recent if message.strip())
-    lang_line = language_hint or "unknown"
+    lang_line = _infer_business_language(language_hint, text, chat_context)
 
     system_prompt = (
         "You are the auto-reply assistant for a Telegram Business account. "
-        "In a new chat, open with a short friendly line that says the owner is currently not online or not available, and that the assistant is ready to answer questions and continue the conversation. "
+        "If this is the first reply in a new chat, open with a short friendly line that says the owner is currently not online or not available, and that the assistant is ready to answer questions and continue the conversation. "
         "Then continue naturally and helpfully as a smart assistant until the owner takes over. "
         "Reply as the account owner would, not as an AI or bot. "
         "Be concise, natural, and helpful. "
@@ -189,6 +205,7 @@ async def generate_business_reply(
         f"Conversation context:\n{context or 'no previous context'}\n\n"
         f"Speaker:\n{speaker_name}\n\n"
         f"Language hint:\n{lang_line}\n\n"
+        f"First reply in chat:\n{first_reply}\n\n"
         f"Incoming message:\n{text}\n\n"
         "Write the next business reply. If this is the first reply in the chat, make it sound like a helpful assistant that says the owner is not online right now and the assistant is ready to answer questions."
     )
