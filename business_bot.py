@@ -261,6 +261,8 @@ async def _handle_new_business_message(update) -> None:
             ensure_ascii=False,
         )
     )
+    if chat_id is not None:
+        register_business_chat_connection(int(chat_id), connection_id)
     _push_context(connection_id, "user", text)
     _push_context(connection_id, "bot", greeting)
 
