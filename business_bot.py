@@ -2,13 +2,14 @@ import asyncio
 import contextlib
 import json
 import random
+from datetime import timedelta
 
 from telethon import TelegramClient, events, functions, types
 from telethon.errors import RPCError
 from telethon.sessions import StringSession
 
 from greeting_texts import build_greeting_text
-from settings import API_HASH, API_ID, BOT_NAME, BOT_STAGE, BOT_TOKEN, BOT_VERSION, OUTPUTS_DIR
+from settings import API_HASH, API_ID, BOT_NAME, BOT_STAGE, BOT_TOKEN, BOT_VERSION, OUTPUTS_DIR, TZ_OFFSET
 
 
 GREETED_USERS_FILE = OUTPUTS_DIR / "business_greeted_users.json"
@@ -50,6 +51,14 @@ def _peer_user_id(peer) -> int | None:
     return getattr(peer, "user_id", None)
 
 
+def _local_date_key(dt) -> tuple[int, int, int] | None:
+    if dt is None:
+        return None
+
+    shifted = dt + timedelta(hours=TZ_OFFSET)
+    return shifted.year, shifted.month, shifted.day
+
+
 async def _get_business_connection(connection_id: str) -> types.BotBusinessConnection | None:
     connection = BUSINESS_CONNECTIONS.get(connection_id)
     if connection is not None:
@@ -77,6 +86,45 @@ async def _resolve_input_peer(message, connection: types.BotBusinessConnection):
             return await client.get_input_entity(types.PeerUser(int(user_id)))
 
     return None
+
+
+async def _has_messages_today(connection_id: str, message) -> bool:
+    connection = await _get_business_connection(connection_id)
+    if connection is None:
+        return True
+
+    input_peer = await _resolve_input_peer(message, connection)
+    if input_peer is None:
+        return True
+
+    request = functions.messages.GetHistoryRequest(
+        peer=input_peer,
+        offset_id=0,
+        offset_date=None,
+        add_offset=0,
+        limit=1,
+        max_id=max(0, int(getattr(message, "id", 0)) - 1),
+        min_id=0,
+        hash=0,
+    )
+
+    sender = await client._borrow_exported_sender(connection.dc_id)
+    try:
+        history = await sender.send(functions.InvokeWithBusinessConnectionRequest(connection_id=connection_id, query=request))
+    finally:
+        await client._return_exported_sender(sender)
+
+    previous_messages = list(getattr(history, "messages", []) or [])
+    if not previous_messages:
+        return False
+
+    previous = previous_messages[0]
+    current_day = _local_date_key(getattr(message, "date", None))
+    previous_day = _local_date_key(getattr(previous, "date", None))
+    if current_day is None or previous_day is None:
+        return True
+
+    return previous_day == current_day
 
 
 async def _send_business_reply(connection_id: str, message, text: str) -> None:
@@ -116,6 +164,9 @@ async def _handle_new_business_message(update) -> None:
 
     text = (getattr(message, "message", None) or "").strip()
     if text.startswith(("/", ".")):
+        return
+
+    if await _has_messages_today(connection_id, message):
         return
 
     sender = None
