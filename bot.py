@@ -12,6 +12,7 @@ from group_reactions import (
     sync_bot_identity,
 )
 from business_tools import handle_private_business_command
+from business_bot import run_business_bot_forever
 from health_server import run_health_server
 from settings import (
     API_HASH,
@@ -68,6 +69,7 @@ async def handle_new_message(event):
 
 async def run_bot_forever():
     inactivity_task = None
+    business_task = None
 
     while True:
         try:
@@ -91,6 +93,8 @@ async def run_bot_forever():
             print("TEST_INIT_PRIVATE_ONLY =", TEST_INIT_PRIVATE_ONLY)
 
             inactivity_task = maybe_start_inactivity_loop(inactivity_task)
+            if business_task is None or business_task.done():
+                business_task = asyncio.create_task(run_business_bot_forever())
 
             print("Userbot started and listening for new messages...")
             await client.run_until_disconnected()

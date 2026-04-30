@@ -2,19 +2,13 @@ import asyncio
 import contextlib
 import json
 import random
-import threading
 
 from telethon import TelegramClient, events, functions, types
 from telethon.errors import RPCError
 from telethon.sessions import StringSession
 
 from greeting_texts import build_greeting_text
-from health_server import run_health_server
 from settings import API_HASH, API_ID, BOT_NAME, BOT_STAGE, BOT_TOKEN, BOT_VERSION, OUTPUTS_DIR
-
-
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN is missing. Add a BotFather token for the connected business bot.")
 
 
 GREETED_USERS_FILE = OUTPUTS_DIR / "business_greeted_users.json"
@@ -141,7 +135,11 @@ async def handle_raw(event):
         return
 
 
-async def run_bot_forever():
+async def run_business_bot_forever():
+    if not BOT_TOKEN:
+        print("BOT_TOKEN is missing, business bot is disabled.")
+        return
+
     while True:
         try:
             print(f"Starting {BOT_NAME} {BOT_VERSION} [{BOT_STAGE}] business bot...")
@@ -164,5 +162,4 @@ async def run_bot_forever():
 
 if __name__ == "__main__":
     _load_seen_users()
-    threading.Thread(target=run_health_server, daemon=True).start()
-    asyncio.run(run_bot_forever())
+    asyncio.run(run_business_bot_forever())
