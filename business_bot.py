@@ -115,9 +115,17 @@ async def _send_business_reply(connection_id: str, message, text: str) -> None:
         random_id=random.getrandbits(63),
         reply_to=types.InputReplyToMessage(reply_to_msg_id=getattr(message, "id", 0)),
     )
-    sender = await client._borrow_exported_sender(connection.dc_id)
+    target_dc_id = getattr(connection, "dc_id", None)
+    current_dc_id = getattr(getattr(client, "session", None), "dc_id", None)
+    wrapped_request = functions.InvokeWithBusinessConnectionRequest(connection_id=connection_id, query=request)
+
+    if target_dc_id is None or target_dc_id == current_dc_id:
+        await client(wrapped_request)
+        return
+
+    sender = await client._borrow_exported_sender(target_dc_id)
     try:
-        await sender.send(functions.InvokeWithBusinessConnectionRequest(connection_id=connection_id, query=request))
+        await sender.send(wrapped_request)
     finally:
         await client._return_exported_sender(sender)
 
