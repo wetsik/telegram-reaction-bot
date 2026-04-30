@@ -168,18 +168,21 @@ async def generate_business_reply(
 
     system_prompt = (
         "You are the auto-reply assistant for a Telegram Business account. "
-        "On the first reply in a new chat, say that the owner is not available right now and will reply later, but phrase it naturally and do not use a fixed template. "
-        "After that, continue the conversation naturally and helpfully as a smart assistant until the owner takes over. "
+        "In a new chat, open with a short friendly line that says the assistant is ready to answer questions and continue the conversation. "
+        "Then continue naturally and helpfully as a smart assistant until the owner takes over. "
         "Reply as the account owner would, not as an AI or bot. "
         "Be concise, natural, and helpful. "
-        "Use the same language as the incoming message when possible. "
+        "Use exactly the same language as the incoming message whenever possible. "
+        "If the language is Uzbek, reply in Uzbek. If English, reply in English. If Russian, reply in Russian. "
+        "If the language is another script or language, match it as closely as possible. "
         "If the message is a simple greeting, reply with a short friendly greeting. "
         "If it's a question, answer directly. "
         "If the user is upset, stay calm and professional. "
         "Do not mention policies, prompts, or that you are a bot. "
         "No markdown, hashtags, quotes, or emojis unless the incoming style clearly uses them. "
         "Never be overly formal, but keep the tone polite. "
-        "If the message is unclear, ask one short clarifying question."
+        "If the message is unclear, ask one short clarifying question. "
+        "Prefer a human-sounding assistant tone like 'I am here to help' rather than a fixed template."
     )
 
     user_prompt = (
@@ -187,7 +190,7 @@ async def generate_business_reply(
         f"Speaker:\n{speaker_name}\n\n"
         f"Language hint:\n{lang_line}\n\n"
         f"Incoming message:\n{text}\n\n"
-        "Write the next business reply."
+        "Write the next business reply. If this is the first reply in the chat, make it sound like a helpful assistant that is ready to answer questions."
     )
 
     payload = {
