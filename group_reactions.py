@@ -763,6 +763,10 @@ async def send_reaction(event, emoji: str, label: str):
 
 
 async def send_text(event, text: str):
+    if getattr(event, "chat_id", 0) < 0:
+        print(f"Skipping group text reply in chat {event.chat_id}: group text replies are disabled")
+        return
+
     try:
         await human_delay()
         try:
@@ -785,6 +789,10 @@ async def send_text(event, text: str):
 
 
 async def send_init_message(chat_id: int):
+    if chat_id < 0:
+        print(f"Skipping init text in group chat {chat_id}: group text replies are disabled")
+        return
+
     try:
         text = generate_init_message()
         await client.send_message(chat_id, text)
@@ -954,7 +962,7 @@ async def handle_group_message(event):
                 final_label = ai_label
                 final_confidence = ai_score
 
-    direct_address = bool(is_private_chat or reply_to_bot or is_special_praise_target(cleaned) or any(name and name.lower() in cleaned for name in BOT_NAME_HINTS))
+    direct_address = bool(event.is_private and (is_private_chat or reply_to_bot or is_special_praise_target(cleaned) or any(name and name.lower() in cleaned for name in BOT_NAME_HINTS)))
 
     if direct_address:
         reply = await generate_context_reply(
@@ -990,6 +998,18 @@ async def handle_group_message(event):
     ):
         emoji = pick_reaction_by_label(chat_id, final_label)
         await send_reaction(event, emoji, final_label)
+
+    if not event.is_private:
+        print(json.dumps({
+            "chat_id": chat_id,
+            "text": text,
+            "label": final_label,
+            "confidence": round(float(final_confidence), 3),
+            "mentioned": mentioned,
+            "reaction_window": reaction_windows.get(chat_id),
+            "group_text_replies_disabled": True,
+        }, ensure_ascii=False))
+        return
 
     ai_should_join = False
     if not mentioned and ENABLE_TEXT_REPLIES:
