@@ -2,18 +2,15 @@ import asyncio
 import contextlib
 import json
 import random
-from datetime import timedelta
 
 from telethon import TelegramClient, events, functions, types
 from telethon.errors import RPCError
 from telethon.sessions import StringSession
 
 from greeting_texts import build_greeting_text
-from settings import API_HASH, API_ID, BOT_NAME, BOT_STAGE, BOT_TOKEN, BOT_VERSION, OUTPUTS_DIR, TZ_OFFSET
+from settings import API_HASH, API_ID, BOT_NAME, BOT_STAGE, BOT_TOKEN, BOT_VERSION, OUTPUTS_DIR
 
 
-GREETED_USERS_FILE = OUTPUTS_DIR / "business_greeted_users.json"
-GREETED_USER_IDS: set[int] = set()
 BUSINESS_CONNECTIONS: dict[str, types.BotBusinessConnection] = {}
 client = TelegramClient(StringSession(), API_ID, API_HASH)
 
@@ -22,41 +19,10 @@ def _ensure_outputs_dir() -> None:
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _load_seen_users() -> None:
-    try:
-        if GREETED_USERS_FILE.exists():
-            data = json.loads(GREETED_USERS_FILE.read_text(encoding="utf-8"))
-            if isinstance(data, list):
-                for item in data:
-                    if isinstance(item, int):
-                        GREETED_USER_IDS.add(item)
-    except Exception as error:
-        print(f"Business greeting load error: {error}")
-
-
-def _save_seen_users() -> None:
-    try:
-        _ensure_outputs_dir()
-        payload = sorted(GREETED_USER_IDS)
-        tmp_file = GREETED_USERS_FILE.with_suffix(".json.tmp")
-        tmp_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp_file.replace(GREETED_USERS_FILE)
-    except Exception as error:
-        print(f"Business greeting save error: {error}")
-
-
 def _peer_user_id(peer) -> int | None:
     if peer is None:
         return None
     return getattr(peer, "user_id", None)
-
-
-def _local_date_key(dt) -> tuple[int, int, int] | None:
-    if dt is None:
-        return None
-
-    shifted = dt + timedelta(hours=TZ_OFFSET)
-    return shifted.year, shifted.month, shifted.day
 
 
 async def _get_business_connection(connection_id: str) -> types.BotBusinessConnection | None:
@@ -88,14 +54,14 @@ async def _resolve_input_peer(message, connection: types.BotBusinessConnection):
     return None
 
 
-async def _has_messages_today(connection_id: str, message) -> bool:
+async def _chat_has_previous_messages(connection_id: str, message) -> bool:
     connection = await _get_business_connection(connection_id)
     if connection is None:
-        return True
+        return False
 
     input_peer = await _resolve_input_peer(message, connection)
     if input_peer is None:
-        return True
+        return False
 
     request = functions.messages.GetHistoryRequest(
         peer=input_peer,
@@ -115,16 +81,7 @@ async def _has_messages_today(connection_id: str, message) -> bool:
         await client._return_exported_sender(sender)
 
     previous_messages = list(getattr(history, "messages", []) or [])
-    if not previous_messages:
-        return False
-
-    previous = previous_messages[0]
-    current_day = _local_date_key(getattr(message, "date", None))
-    previous_day = _local_date_key(getattr(previous, "date", None))
-    if current_day is None or previous_day is None:
-        return True
-
-    return previous_day == current_day
+    return bool(previous_messages)
 
 
 async def _send_business_reply(connection_id: str, message, text: str) -> None:
@@ -159,14 +116,14 @@ async def _handle_new_business_message(update) -> None:
     if sender_id is None:
         sender_id = _peer_user_id(getattr(message, "peer_id", None))
 
-    if sender_id is None or sender_id in GREETED_USER_IDS:
+    if sender_id is None:
         return
 
     text = (getattr(message, "message", None) or "").strip()
     if text.startswith(("/", ".")):
         return
 
-    if await _has_messages_today(connection_id, message):
+    if await _chat_has_previous_messages(connection_id, message):
         return
 
     sender = None
@@ -185,8 +142,6 @@ async def _handle_new_business_message(update) -> None:
         print(f"Business reply failed: {type(error).__name__}: {error}")
         return
 
-    GREETED_USER_IDS.add(int(sender_id))
-    _save_seen_users()
     print(
         json.dumps(
             {
@@ -255,5 +210,4 @@ async def run_business_bot_forever():
 
 
 if __name__ == "__main__":
-    _load_seen_users()
     asyncio.run(run_business_bot_forever())
