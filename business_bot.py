@@ -13,6 +13,7 @@ from settings import API_HASH, API_ID, BOT_NAME, BOT_STAGE, BOT_TOKEN, BOT_VERSI
 
 GREETED_USERS_FILE = OUTPUTS_DIR / "business_greeted_users.json"
 GREETED_USER_IDS: set[int] = set()
+BUSINESS_CONNECTIONS: dict[str, types.BotBusinessConnection] = {}
 client = TelegramClient(StringSession(), API_ID, API_HASH)
 
 
@@ -49,15 +50,55 @@ def _peer_user_id(peer) -> int | None:
     return getattr(peer, "user_id", None)
 
 
-async def _send_business_reply(connection_id: str, peer, message_id: int, text: str) -> None:
-    input_peer = await client.get_input_entity(peer)
+async def _get_business_connection(connection_id: str) -> types.BotBusinessConnection | None:
+    connection = BUSINESS_CONNECTIONS.get(connection_id)
+    if connection is not None:
+        return connection
+
+    try:
+        connection = await client(functions.account.GetBotBusinessConnectionRequest(connection_id))
+    except Exception as error:
+        print(f"Business connection fetch failed for {connection_id}: {type(error).__name__}: {error}")
+        return None
+
+    BUSINESS_CONNECTIONS[connection_id] = connection
+    return connection
+
+
+async def _resolve_input_peer(message, connection: types.BotBusinessConnection):
+    peer = getattr(message, "peer_id", None)
+    if peer is not None:
+        with contextlib.suppress(Exception):
+            return await client.get_input_entity(peer)
+
+    user_id = getattr(connection, "user_id", None)
+    if user_id is not None:
+        with contextlib.suppress(Exception):
+            return await client.get_input_entity(types.PeerUser(int(user_id)))
+
+    return None
+
+
+async def _send_business_reply(connection_id: str, message, text: str) -> None:
+    connection = await _get_business_connection(connection_id)
+    if connection is None:
+        raise RuntimeError("business connection not available")
+
+    input_peer = await _resolve_input_peer(message, connection)
+    if input_peer is None:
+        raise RuntimeError("could not resolve business peer for reply")
+
     request = functions.messages.SendMessageRequest(
         peer=input_peer,
         message=text,
         random_id=random.getrandbits(63),
-        reply_to=types.InputReplyToMessage(reply_to_msg_id=message_id),
+        reply_to=types.InputReplyToMessage(reply_to_msg_id=getattr(message, "id", 0)),
     )
-    await client(functions.InvokeWithBusinessConnectionRequest(connection_id=connection_id, query=request))
+    sender = await client._borrow_exported_sender(connection.dc_id)
+    try:
+        await sender.send(functions.InvokeWithBusinessConnectionRequest(connection_id=connection_id, query=request))
+    finally:
+        await client._return_exported_sender(sender)
 
 
 async def _handle_new_business_message(update) -> None:
@@ -85,7 +126,7 @@ async def _handle_new_business_message(update) -> None:
     greeting = build_greeting_text(lang_code, text)
 
     try:
-        await _send_business_reply(connection_id, message.peer_id, message.id, greeting)
+        await _send_business_reply(connection_id, message, greeting)
     except RPCError as error:
         print(f"Business reply error: {error.__class__.__name__}: {error}")
         return
@@ -117,6 +158,8 @@ async def handle_raw(event):
 
     if isinstance(update, types.UpdateBotBusinessConnect):
         connection = getattr(update, "connection", None)
+        if connection is not None:
+            BUSINESS_CONNECTIONS[getattr(connection, "connection_id", "")] = connection
         print(
             json.dumps(
                 {
