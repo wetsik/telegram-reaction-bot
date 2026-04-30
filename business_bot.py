@@ -2,16 +2,19 @@ import asyncio
 import contextlib
 import json
 import random
+from collections import defaultdict, deque
 
 from telethon import TelegramClient, events, functions, types
 from telethon.errors import RPCError
 from telethon.sessions import StringSession
 
+from ai_replies import generate_business_reply
 from greeting_texts import build_greeting_text
 from settings import API_HASH, API_ID, BOT_NAME, BOT_STAGE, BOT_TOKEN, BOT_VERSION, OUTPUTS_DIR
 
 
 BUSINESS_CONNECTIONS: dict[str, types.BotBusinessConnection] = {}
+BUSINESS_CONTEXT: dict[str, deque[str]] = defaultdict(lambda: deque(maxlen=12))
 client = TelegramClient(StringSession(), API_ID, API_HASH)
 
 
@@ -68,36 +71,6 @@ async def _resolve_input_peer(message, connection: types.BotBusinessConnection):
     return None
 
 
-async def _chat_has_previous_messages(connection_id: str, message) -> bool:
-    connection = await _get_business_connection(connection_id)
-    if connection is None:
-        return False
-
-    input_peer = await _resolve_input_peer(message, connection)
-    if input_peer is None:
-        return False
-
-    request = functions.messages.GetHistoryRequest(
-        peer=input_peer,
-        offset_id=0,
-        offset_date=None,
-        add_offset=0,
-        limit=1,
-        max_id=max(0, int(getattr(message, "id", 0)) - 1),
-        min_id=0,
-        hash=0,
-    )
-
-    sender = await client._borrow_exported_sender(connection.dc_id)
-    try:
-        history = await sender.send(functions.InvokeWithBusinessConnectionRequest(connection_id=connection_id, query=request))
-    finally:
-        await client._return_exported_sender(sender)
-
-    previous_messages = list(getattr(history, "messages", []) or [])
-    return bool(previous_messages)
-
-
 async def _send_business_reply(connection_id: str, message, text: str) -> None:
     connection = await _get_business_connection(connection_id)
     if connection is None:
@@ -120,10 +93,43 @@ async def _send_business_reply(connection_id: str, message, text: str) -> None:
         await client._return_exported_sender(sender)
 
 
+def _push_context(connection_id: str, role: str, text: str) -> None:
+    text = " ".join((text or "").split()).strip()
+    if not text:
+        return
+
+    BUSINESS_CONTEXT[connection_id].append(f"{role}: {text}")
+
+
+def _can_reply(connection: types.BotBusinessConnection | None) -> bool:
+    if connection is None:
+        return False
+    if getattr(connection, "disabled", False):
+        return False
+    rights = getattr(connection, "rights", None)
+    return bool(getattr(rights, "can_reply", False))
+
+
 async def _handle_new_business_message(update) -> None:
     connection_id = getattr(update, "connection_id", None)
     message = getattr(update, "message", None)
     if not connection_id or message is None:
+        return
+
+    connection = await _get_business_connection(connection_id)
+    if not _can_reply(connection):
+        print(
+            json.dumps(
+                {
+                    "event": "business_skip_no_reply_rights",
+                    "connection_id": connection_id,
+                    "has_connection": bool(connection),
+                    "can_reply": bool(getattr(getattr(connection, "rights", None), "can_reply", False)) if connection else False,
+                    "disabled": bool(getattr(connection, "disabled", False)) if connection else None,
+                },
+                ensure_ascii=False,
+            )
+        )
         return
 
     sender_id = _peer_user_id(getattr(message, "from_id", None))
@@ -137,15 +143,25 @@ async def _handle_new_business_message(update) -> None:
     if text.startswith(("/", ".")):
         return
 
-    if await _chat_has_previous_messages(connection_id, message):
-        return
+    reply_to_message = getattr(update, "reply_to_message", None)
+    if reply_to_message is not None:
+        _push_context(connection_id, "reply", getattr(reply_to_message, "message", None) or "")
 
     sender = None
     with contextlib.suppress(Exception):
         sender = await client.get_entity(message.from_id)
 
     lang_code = getattr(sender, "lang_code", None)
-    greeting = build_greeting_text(lang_code, text)
+    speaker_name = getattr(sender, "first_name", None) or getattr(sender, "username", None) or "unknown"
+    chat_context = list(BUSINESS_CONTEXT[connection_id])[-8:]
+    greeting = await generate_business_reply(
+        text=text,
+        chat_context=chat_context,
+        speaker_name=speaker_name,
+        language_hint=lang_code,
+    )
+    if not greeting:
+        greeting = build_greeting_text(lang_code, text)
 
     try:
         await _send_business_reply(connection_id, message, greeting)
@@ -168,6 +184,8 @@ async def _handle_new_business_message(update) -> None:
             ensure_ascii=False,
         )
     )
+    _push_context(connection_id, "user", text)
+    _push_context(connection_id, "bot", greeting)
 
 
 @client.on(events.Raw())

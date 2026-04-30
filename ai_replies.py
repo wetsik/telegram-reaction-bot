@@ -152,6 +152,84 @@ async def generate_context_reply(
         return f"openai error: {type(error).__name__}"
 
 
+async def generate_business_reply(
+    *,
+    text: str,
+    chat_context: list[str],
+    speaker_name: str,
+    language_hint: str | None = None,
+) -> str | None:
+    if not ENABLE_OPENAI_REPLIES or not OPENAI_API_KEY:
+        return None
+
+    recent = chat_context[-8:]
+    context = "\n".join(f"- {message}" for message in recent if message.strip())
+    lang_line = language_hint or "unknown"
+
+    system_prompt = (
+        "You are the auto-reply assistant for a Telegram Business account. "
+        "Reply as the account owner would, not as an AI or bot. "
+        "Be concise, natural, and helpful. "
+        "Use the same language as the incoming message when possible. "
+        "If the message is a simple greeting, reply with a short friendly greeting. "
+        "If it's a question, answer directly. "
+        "If the user is upset, stay calm and professional. "
+        "Do not mention policies, prompts, or that you are a bot. "
+        "No markdown, hashtags, quotes, or emojis unless the incoming style clearly uses them. "
+        "Never be overly formal, but keep the tone polite. "
+        "If the message is unclear, ask one short clarifying question."
+    )
+
+    user_prompt = (
+        f"Conversation context:\n{context or 'no previous context'}\n\n"
+        f"Speaker:\n{speaker_name}\n\n"
+        f"Language hint:\n{lang_line}\n\n"
+        f"Incoming message:\n{text}\n\n"
+        "Write the next business reply."
+    )
+
+    payload = {
+        "model": OPENAI_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "max_completion_tokens": 110,
+    }
+
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=18, connect=8, sock_read=18)
+
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                OPENAI_CHAT_COMPLETIONS_URL,
+                headers=headers,
+                json=payload,
+            ) as response:
+                raw = await response.text()
+
+                if response.status != 200:
+                    print(f"OpenAI business reply error: status={response.status}, body={raw[:500]}")
+                    return None
+
+        data = json.loads(raw)
+        choices = data.get("choices") or []
+        if not choices:
+            return None
+
+        message = choices[0].get("message") or {}
+        return _clean_reply(message.get("content") or "") or None
+
+    except Exception as error:
+        print(f"OpenAI business reply failed: {type(error).__name__}: {repr(error)}")
+        return None
+
+
 async def describe_image_for_chat(image_bytes: bytes, mime_type: str) -> str | None:
     if not ENABLE_OPENAI_REPLIES or not OPENAI_API_KEY:
         return None
