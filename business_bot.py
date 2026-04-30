@@ -10,7 +10,11 @@ from telethon.sessions import StringSession
 
 from ai_replies import generate_business_reply
 from greeting_texts import build_greeting_text
-from business_state import has_business_chat_responded
+from business_state import (
+    has_business_connection_responded,
+    has_business_chat_responded,
+    register_business_chat_connection,
+)
 from settings import API_HASH, API_ID, BOT_NAME, BOT_STAGE, BOT_TOKEN, BOT_VERSION, OUTPUTS_DIR
 
 
@@ -200,7 +204,10 @@ async def _handle_new_business_message(update) -> None:
 
     chat_id = getattr(message, "peer_id", None)
     chat_id = getattr(chat_id, "user_id", None) if chat_id is not None else None
-    if chat_id is not None and has_business_chat_responded(int(chat_id)):
+    if chat_id is not None:
+        register_business_chat_connection(int(chat_id), connection_id)
+
+    if (chat_id is not None and has_business_chat_responded(int(chat_id))) or has_business_connection_responded(connection_id):
         return
 
     text = (getattr(message, "message", None) or "").strip()
