@@ -5,6 +5,7 @@ from pathlib import Path
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING = os.environ["SESSION_STRING"]
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 
 PORT = int(os.environ.get("PORT", "10000"))
 HF_API_TOKEN = os.environ.get("HF_API_TOKEN", "").strip()
