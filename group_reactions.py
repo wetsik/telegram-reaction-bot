@@ -7,7 +7,12 @@ import time
 from telethon import functions, types
 from telethon.errors import FloodWaitError
 
-from ai_replies import describe_image_for_chat, generate_context_reply, should_join_context
+from reply_templates import (
+    choose_delivery_mode,
+    describe_image_for_chat,
+    generate_context_reply,
+    should_join_context,
+)
 from group_data import (
     BLACKLIST_CONTAINS,
     GREETING_WORDS,
@@ -41,7 +46,6 @@ from settings import (
     ENABLE_INIT_MESSAGES,
     ENABLE_REACTIONS,
     ENABLE_TEXT_REPLIES,
-    HF_API_TOKEN,
     INACTIVITY_CHECK_INTERVAL,
     INACTIVITY_TRIGGER,
     INIT_MESSAGE_CHANCE,
@@ -57,9 +61,8 @@ from settings import (
     TEST_INIT_PRIVATE_ONLY,
     TEXT_COOLDOWN,
     TEXT_REPLY_CHANCE,
-    USE_AI_CLASSIFICATION,
 )
-from text_classifier import build_ai_input, classify_with_hf, clean_text, score_with_rules
+from message_rules import clean_text, score_with_rules
 from time_utils import get_activity_multiplier, get_local_hour
 
 
@@ -585,7 +588,7 @@ def should_send_text(
     mentioned: bool,
     label: str,
     confidence: float,
-    ai_should_join: bool = False,
+    should_join: bool = False,
 ) -> bool:
     now = int(time.time())
     hour = get_local_hour()
@@ -612,7 +615,7 @@ def should_send_text(
     if len(text.strip()) < MIN_TEXT_LEN and not mentioned:
         return False
 
-    if ai_should_join:
+    if should_join:
         if now - state["last_text_at"] < 2:
             return False
         return True
@@ -762,18 +765,17 @@ async def send_reaction(event, emoji: str, label: str):
         print(f"ERROR while reacting: {e}")
 
 
-async def send_text(event, text: str):
-    if getattr(event, "chat_id", 0) < 0:
-        print(f"Skipping group text reply in chat {event.chat_id}: group text replies are disabled")
-        return
-
+async def send_text(event, text: str, reply_mode: str = "reply"):
     try:
         await human_delay()
-        try:
-            await event.reply(text)
-        except Exception as reply_error:
-            print(f"Reply failed, falling back to direct send: {reply_error}")
+        if reply_mode == "message":
             await client.send_message(event.chat_id, text)
+        else:
+            try:
+                await event.reply(text)
+            except Exception as reply_error:
+                print(f"Reply failed, falling back to direct send: {reply_error}")
+                await client.send_message(event.chat_id, text)
         recent_bot_texts[event.chat_id].append(text)
         recent_messages[event.chat_id].append(f"{BOT_NAME}: {clean_text(text)}")
         mark_text_sent(event.chat_id)
@@ -789,10 +791,6 @@ async def send_text(event, text: str):
 
 
 async def send_init_message(chat_id: int):
-    if chat_id < 0:
-        print(f"Skipping init text in group chat {chat_id}: group text replies are disabled")
-        return
-
     try:
         text = generate_init_message()
         await client.send_message(chat_id, text)
@@ -934,35 +932,7 @@ async def handle_group_message(event):
     final_label = rule_label
     final_confidence = rule_confidence
 
-    use_ai_now = (
-        USE_AI_CLASSIFICATION
-        and bool(HF_API_TOKEN)
-        and len(text.strip()) >= 20
-        and len(text.split()) >= 4
-        and (
-            rule_confidence < 1.2
-            or len(text) > 35
-            or (
-                "но" in cleaned
-                or "хотя" in cleaned
-                or "зато" in cleaned
-                or "если" in cleaned
-                or "потому" in cleaned
-                or "либо" in cleaned
-            )
-        )
-    )
-
-    if use_ai_now:
-        ai_input = build_ai_input(text, context_messages)
-        ai_result = await classify_with_hf(ai_input)
-        if ai_result:
-            ai_label, ai_score = ai_result
-            if ai_score >= 0.60:
-                final_label = ai_label
-                final_confidence = ai_score
-
-    direct_address = bool(event.is_private and (is_private_chat or reply_to_bot or is_special_praise_target(cleaned) or any(name and name.lower() in cleaned for name in BOT_NAME_HINTS)))
+    direct_address = bool(is_private_chat or reply_to_bot or is_special_praise_target(cleaned) or any(name and name.lower() in cleaned for name in BOT_NAME_HINTS))
 
     if direct_address:
         reply = await generate_context_reply(
@@ -977,7 +947,26 @@ async def handle_group_message(event):
         if not reply:
             reply = "Да, я на связи."
 
-        await send_text(event, reply)
+        reply_mode = choose_delivery_mode(
+            text=text,
+            label=final_label,
+            mentioned=True,
+            direct_address=True,
+        )
+        if reply_mode is None:
+            print(json.dumps({
+                "chat_id": chat_id,
+                "text": text,
+                "label": final_label,
+                "confidence": round(float(final_confidence), 3),
+                "mentioned": True,
+                "reaction_window": reaction_windows.get(chat_id),
+                "direct_address": True,
+                "response": "silent",
+            }, ensure_ascii=False))
+            return
+
+        await send_text(event, reply, reply_mode=reply_mode)
         print(json.dumps({
             "chat_id": chat_id,
             "text": text,
@@ -986,6 +975,7 @@ async def handle_group_message(event):
             "mentioned": True,
             "reaction_window": reaction_windows.get(chat_id),
             "direct_address": True,
+            "response": reply_mode,
         }, ensure_ascii=False))
         return
 
@@ -999,21 +989,10 @@ async def handle_group_message(event):
         emoji = pick_reaction_by_label(chat_id, final_label)
         await send_reaction(event, emoji, final_label)
 
-    if not event.is_private:
-        print(json.dumps({
-            "chat_id": chat_id,
-            "text": text,
-            "label": final_label,
-            "confidence": round(float(final_confidence), 3),
-            "mentioned": mentioned,
-            "reaction_window": reaction_windows.get(chat_id),
-            "group_text_replies_disabled": True,
-        }, ensure_ascii=False))
-        return
-
-    ai_should_join = False
+    should_join = False
+    response_mode = None
     if not mentioned and ENABLE_TEXT_REPLIES:
-        ai_should_join = await should_join_context(
+        should_join = await should_join_context(
             text=text,
             context_messages=context_messages,
             chat_memory=chat_memory,
@@ -1028,7 +1007,7 @@ async def handle_group_message(event):
         mentioned,
         final_label,
         float(final_confidence),
-        ai_should_join,
+        should_join,
     ):
         reply = await generate_context_reply(
             text=text,
@@ -1040,7 +1019,14 @@ async def handle_group_message(event):
             mentioned=mentioned,
         )
         if reply:
-            await send_text(event, reply)
+            response_mode = choose_delivery_mode(
+                text=text,
+                label=final_label,
+                mentioned=mentioned,
+                direct_address=False,
+            )
+            if response_mode is not None:
+                await send_text(event, reply, reply_mode=response_mode)
 
     print(json.dumps({
         "chat_id": chat_id,
@@ -1049,6 +1035,7 @@ async def handle_group_message(event):
         "confidence": round(float(final_confidence), 3),
         "mentioned": mentioned,
         "reaction_window": reaction_windows.get(chat_id),
+        "response": response_mode or "none",
     }, ensure_ascii=False))
 
 

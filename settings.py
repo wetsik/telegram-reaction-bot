@@ -1,6 +1,15 @@
 import os
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+
+if load_dotenv is not None:
+    load_dotenv()
+
 
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
@@ -8,12 +17,6 @@ SESSION_STRING = os.environ["SESSION_STRING"]
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 
 PORT = int(os.environ.get("PORT", "10000"))
-HF_API_TOKEN = os.environ.get("HF_API_TOKEN", "").strip()
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini").strip()
-ENABLE_OPENAI_REPLIES = os.environ.get(
-    "ENABLE_OPENAI_REPLIES", "true"
-).lower() == "true"
 
 DOWNLOADS_DIR = Path("downloads")
 OUTPUTS_DIR = Path("outputs")
@@ -71,10 +74,6 @@ INIT_MIN_GAP = int(os.environ.get("INIT_MIN_GAP", "604800"))
 
 TEST_INIT_PRIVATE_ONLY = os.environ.get(
     "TEST_INIT_PRIVATE_ONLY", "false"
-).lower() == "true"
-
-USE_AI_CLASSIFICATION = os.environ.get(
-    "USE_AI_CLASSIFICATION", "true"
 ).lower() == "true"
 
 BOT_NAME = "westik"
