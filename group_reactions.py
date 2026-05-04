@@ -68,12 +68,11 @@ from time_utils import get_activity_multiplier, get_local_hour
 
 client = None
 
-# Each chat gets a random reaction budget per message window.
-# This keeps the bot lively without letting reactions become spammy.
-# Most windows get 1-2 reactions, some get none, and only rare lively windows get 3-4.
-REACTION_WINDOW_SIZE = 60
-REACTION_BUDGET_WEIGHTS = ((0, 0.12), (1, 0.52), (2, 0.25), (3, 0.09), (4, 0.02))
-REACTION_MIN_MESSAGES_GAP = 8
+# Reactions now follow a fixed cadence so the bot feels more consistent.
+# Every fifth eligible message gets a reaction attempt.
+REACTION_WINDOW_SIZE = 5
+REACTION_BUDGET_WEIGHTS = ((1, 1.0),)
+REACTION_MIN_MESSAGES_GAP = 5
 REACTION_MIN_TEXT_LEN = 4
 REACTION_LABEL_CHANCE = {
     "funny": 0.95,
@@ -106,8 +105,7 @@ TEXT_LABEL_CHANCE = {
 
 
 def _pick_reaction_budget() -> int:
-    budgets, weights = zip(*REACTION_BUDGET_WEIGHTS)
-    return random.choices(budgets, weights=weights, k=1)[0]
+    return 1
 
 
 def _pick_slots(budget: int, window_size: int) -> list[int]:
@@ -118,7 +116,7 @@ def _pick_slots(budget: int, window_size: int) -> list[int]:
 
 
 def _pick_reaction_slots(budget: int) -> list[int]:
-    return _pick_slots(budget, REACTION_WINDOW_SIZE)
+    return [REACTION_WINDOW_SIZE] if budget > 0 else []
 
 
 def _new_reaction_window() -> dict:
@@ -155,7 +153,7 @@ def _reaction_fit_score(text: str, label: str, confidence: float, mentioned: boo
     base = REACTION_LABEL_CHANCE.get(label, REACTION_LABEL_CHANCE["neutral"])
 
     if label == "neutral" and confidence <= 1.0 and len(stripped) < 25:
-        return 0.0
+        base *= 0.55
 
     if confidence >= 1.4:
         base += 0.10
@@ -578,6 +576,9 @@ def should_send_reaction(
     chance += recent_activity_bonus(chat_id)
 
     chance *= (0.65 + 0.35 * get_activity_multiplier(hour))
+
+    if window["messages"] % REACTION_WINDOW_SIZE == 0:
+        return random.random() < max(0.88, min(chance, 1.0))
 
     return random.random() < min(chance, 1.0)
 

@@ -11,6 +11,36 @@ def _clean_reply(text: str) -> str:
     return text.strip("\"' ")
 
 
+JOKE_MARKERS = (
+    "ахах",
+    "хаха",
+    "лол",
+    "рофл",
+    "ржу",
+    "угар",
+    "прикол",
+    "шут",
+    "шутк",
+    "кек",
+    "гы",
+)
+
+SERIOUS_MARKERS = (
+    "обсудим",
+    "серьезно",
+    "серьёзно",
+    "важно",
+    "проблем",
+    "анализ",
+    "план",
+    "поясни",
+    "разбор",
+    "логика",
+    "отчет",
+    "отчёт",
+)
+
+
 GREETING_BANK = [
     "йо",
     "ку",
@@ -335,6 +365,14 @@ def _has_question_shape(text: str) -> bool:
     )
 
 
+def _looks_like_joke(text: str) -> bool:
+    return any(marker in text for marker in JOKE_MARKERS)
+
+
+def _looks_serious(text: str) -> bool:
+    return any(marker in text for marker in SERIOUS_MARKERS)
+
+
 def _should_join_locally(*, text: str, label: str) -> bool:
     normalized = _normalize_name_text(text)
     if not normalized:
@@ -349,11 +387,17 @@ def _should_join_locally(*, text: str, label: str) -> bool:
     if label in {"funny", "shock", "hype", "sad", "love", "agreement", "disagreement", "question", "anger"}:
         return True
 
+    if _looks_like_joke(normalized):
+        return True
+
+    if _looks_serious(normalized):
+        return False
+
     if any(word in normalized for word in ("привет", "здарова", "здравствуй", "салам", "hello", "hi", "hey", "yo")):
         return True
 
-    if len(normalized.split()) >= 6:
-        return True
+    if len(normalized.split()) >= 8:
+        return random.random() < 0.18
 
     return False
 
@@ -389,12 +433,20 @@ def _select_bank(*, text: str, label: str, mentioned: bool) -> list[str]:
         return GREETING_BANK + SMART_NEUTRAL_BANK[:300]
 
     if len(normalized.split()) <= 2:
-        return SHORT_BANK + OBSERVATION_BANK + SMART_NEUTRAL_BANK
+        if _looks_like_joke(normalized):
+            return FUNNY_BANK + SARCASM_BANK + SHORT_BANK + SMART_NEUTRAL_BANK[:500]
+        return SHORT_BANK + OBSERVATION_BANK + SMART_NEUTRAL_BANK + FUNNY_BANK[:5]
 
     if mentioned:
         return PRAISE_BANK + OBSERVATION_BANK + SHORT_BANK + SMART_SOCIAL_BANK[:400]
 
-    return REPLY_BANKS["neutral"] + DEEP_BANK + SMART_EXPLANATION_BANK + SMART_PRACTICAL_BANK
+    if _looks_like_joke(normalized):
+        return FUNNY_BANK + SARCASM_BANK + HYPE_BANK + SMART_NEUTRAL_BANK[:600]
+
+    if _looks_serious(normalized):
+        return REPLY_BANKS["neutral"] + SMART_PRACTICAL_BANK[:700] + SMART_EXPLANATION_BANK[:700]
+
+    return REPLY_BANKS["neutral"] + OBSERVATION_BANK + SMART_NEUTRAL_BANK + SMART_PRACTICAL_BANK[:400]
 
 
 def _choose_delivery_mode(*, text: str, label: str, mentioned: bool, direct_address: bool) -> str | None:
@@ -428,11 +480,11 @@ def _choose_delivery_mode(*, text: str, label: str, mentioned: bool, direct_addr
         return "reply"
 
     if strong_trigger:
-        silent_chance = 0.08 if emotional else 0.12
-        message_chance = 0.48 if not short_text else 0.42
+        silent_chance = 0.05 if emotional else 0.10
+        message_chance = 0.55 if not short_text else 0.48
     else:
-        silent_chance = 0.22 if emotional else 0.35
-        message_chance = 0.40 if not short_text else 0.30
+        silent_chance = 0.28 if emotional else 0.40
+        message_chance = 0.34 if not short_text else 0.24
     roll = random.random()
     if roll < silent_chance:
         return None
