@@ -1,7 +1,14 @@
 import random
-import re
 
 from group_data import LIGHT_ROAST_REPLIES, SPECIAL_PRAISE_ALIASES, SPECIAL_PRAISE_REPLIES
+from mock_knowledge import SMART_DATABASE
+
+
+def _clean_reply(text: str) -> str:
+    text = " ".join(text.strip().split())
+    if len(text) > 260:
+        text = text[:257].rstrip() + "..."
+    return text.strip("\"' ")
 
 
 GREETING_BANK = [
@@ -10,16 +17,16 @@ GREETING_BANK = [
     "здарова",
     "приветик",
     "о, привет",
-    "привет, живые",
-    "ну здарова",
     "всем привет",
-    "нормально зашли",
-    "о, это уже контакт",
+    "ну здарова",
     "привет, народ",
     "ага, привет",
     "ну привет",
     "салам, если что",
     "добрый, короче",
+    "привет, живые",
+    "нормально зашли",
+    "о, это уже контакт",
 ]
 
 QUESTION_BANK = [
@@ -212,7 +219,11 @@ DEEP_BANK = [
     "иногда ответ очевиден только после второго взгляда",
 ]
 
-PRAISE_ALIASES = SPECIAL_PRAISE_ALIASES
+SMART_EXPLANATION_BANK = SMART_DATABASE["explanation"]
+SMART_DEEP_BANK = SMART_DATABASE["deep"]
+SMART_PRACTICAL_BANK = SMART_DATABASE["practical"]
+SMART_SOCIAL_BANK = SMART_DATABASE["social"]
+SMART_NEUTRAL_BANK = SMART_DATABASE["neutral"]
 
 REPLY_BANKS = {
     "greeting": GREETING_BANK,
@@ -261,15 +272,7 @@ REPLY_BANKS = {
     "neutral": SHORT_BANK + OBSERVATION_BANK,
 }
 
-SILENT_TRIGGERS = (
-    "ок",
-    "ладно",
-    "ясно",
-    "понятно",
-    "ага",
-    "угу",
-    "ok",
-)
+SILENT_TRIGGERS = ("ок", "ладно", "ясно", "понятно", "ага", "угу", "ok")
 
 
 def _normalize_name_text(text: str) -> str:
@@ -285,7 +288,7 @@ def _normalize_name_text(text: str) -> str:
 
 def _is_special_praise_target(text: str) -> bool:
     normalized = _normalize_name_text(text)
-    return bool(normalized) and any(alias in normalized for alias in PRAISE_ALIASES)
+    return bool(normalized) and any(alias in normalized for alias in SPECIAL_PRAISE_ALIASES)
 
 
 def _contains_hostility(text: str) -> bool:
@@ -312,7 +315,24 @@ def _has_question_shape(text: str) -> bool:
     if text.strip().endswith("?"):
         return True
 
-    return any(word in normalized for word in ("почему", "зачем", "как", "что", "когда", "где", "кто", "сколько", "почему"))
+    return any(
+        word in normalized
+        for word in (
+            "почему",
+            "зачем",
+            "как",
+            "что",
+            "чо",
+            "че",
+            "когда",
+            "где",
+            "кто",
+            "сколько",
+            "можно",
+            "мож",
+            "разве",
+        )
+    )
 
 
 def _should_join_locally(*, text: str, label: str) -> bool:
@@ -348,33 +368,33 @@ def _select_bank(*, text: str, label: str, mentioned: bool) -> list[str]:
         return MILD_ROAST_BANK + LIGHT_ROAST_REPLIES
 
     if _has_question_shape(text):
-        return QUESTION_BANK + DEEP_BANK
+        return QUESTION_BANK + DEEP_BANK + SMART_DEEP_BANK
 
     if any(marker in normalized for marker in ("спор", "неа", "не думаю", "сомнитель", "вряд", "не факт")):
-        return DEBATE_BANK
+        return DEBATE_BANK + SMART_DEEP_BANK[:800]
 
     if label in {"sad", "anger"}:
-        return SUPPORT_BANK
+        return SUPPORT_BANK + SMART_SOCIAL_BANK[:500]
 
     if label in {"funny", "shock"}:
-        return FUNNY_BANK + SARCASM_BANK
+        return FUNNY_BANK + SARCASM_BANK + SMART_NEUTRAL_BANK[:400]
 
     if label in {"hype", "love", "agreement"}:
-        return HYPE_BANK + PRAISE_BANK
+        return HYPE_BANK + PRAISE_BANK + SMART_SOCIAL_BANK[:500]
 
     if label == "disagreement":
-        return DEBATE_BANK + SARCASM_BANK
+        return DEBATE_BANK + SARCASM_BANK + SMART_DEEP_BANK[:700]
 
     if label == "greeting":
-        return GREETING_BANK
+        return GREETING_BANK + SMART_NEUTRAL_BANK[:300]
 
     if len(normalized.split()) <= 2:
-        return SHORT_BANK + OBSERVATION_BANK
+        return SHORT_BANK + OBSERVATION_BANK + SMART_NEUTRAL_BANK
 
     if mentioned:
-        return PRAISE_BANK + OBSERVATION_BANK + SHORT_BANK
+        return PRAISE_BANK + OBSERVATION_BANK + SHORT_BANK + SMART_SOCIAL_BANK[:400]
 
-    return REPLY_BANKS["neutral"] + DEEP_BANK
+    return REPLY_BANKS["neutral"] + DEEP_BANK + SMART_EXPLANATION_BANK + SMART_PRACTICAL_BANK
 
 
 def _choose_delivery_mode(*, text: str, label: str, mentioned: bool, direct_address: bool) -> str | None:
@@ -382,6 +402,7 @@ def _choose_delivery_mode(*, text: str, label: str, mentioned: bool, direct_addr
     words = normalized.split()
     short_text = len(words) <= 3
     emotional = label in {"funny", "shock", "hype", "love", "sad", "anger"}
+    strong_trigger = _should_join_locally(text=text, label=label)
 
     if normalized in SILENT_TRIGGERS:
         return None
@@ -406,8 +427,12 @@ def _choose_delivery_mode(*, text: str, label: str, mentioned: bool, direct_addr
             return "message"
         return "reply"
 
-    silent_chance = 0.22 if emotional else 0.35
-    message_chance = 0.40 if not short_text else 0.30
+    if strong_trigger:
+        silent_chance = 0.08 if emotional else 0.12
+        message_chance = 0.48 if not short_text else 0.42
+    else:
+        silent_chance = 0.22 if emotional else 0.35
+        message_chance = 0.40 if not short_text else 0.30
     roll = random.random()
     if roll < silent_chance:
         return None
