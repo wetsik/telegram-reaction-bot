@@ -238,6 +238,7 @@ class StatusReporter:
         self.estimated = False
         self.finished = False
         self._lock = asyncio.Lock()
+        self._last_rendered: str | None = None
 
     def elapsed(self) -> int:
         return int(asyncio.get_running_loop().time() - self.started_at)
@@ -278,9 +279,14 @@ class StatusReporter:
             if not force and now - self.last_edit_at < self.interval:
                 return
 
+            rendered = self.render()
+            if rendered == self._last_rendered:
+                return
+
             try:
-                await self.message.edit(self.render())
+                await self.message.edit(rendered)
                 self.last_edit_at = now
+                self._last_rendered = rendered
             except Exception as exc:
                 print(f"Status update failed: {exc}")
 
