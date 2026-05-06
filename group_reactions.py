@@ -190,28 +190,12 @@ async def handle_group_message(event):
         except Exception as reply_error:
             print(f"Reply context error: {reply_error}")
 
-    mentioned = (
-        bool(event.is_private)
-        or reply_to_bot
-        or any(name and name in cleaned for name in BOT_NAME_HINTS)
-    )
+    mentioned = bool(event.is_private or reply_to_bot or any(name and name in cleaned for name in BOT_NAME_HINTS))
 
     if ENABLE_REACTIONS and message_counts[chat_id] % 10 == 0:
         await send_reaction(event, pick_reaction_by_label(label), label)
 
-    if not ENABLE_TEXT_REPLIES:
-        return
-
-    should_reply = mentioned
-    if not should_reply:
-        if label == "question":
-            should_reply = random.random() < 0.18
-        elif label in {"funny", "hype", "greeting"}:
-            should_reply = random.random() < 0.08
-        else:
-            should_reply = random.random() < 0.03
-
-    if not should_reply:
+    if not ENABLE_TEXT_REPLIES or not reply_to_bot:
         return
 
     reply = await generate_context_reply(
@@ -229,8 +213,8 @@ async def handle_group_message(event):
     reply_mode = choose_delivery_mode(
         text=text,
         label=label,
-        mentioned=mentioned,
-        direct_address=mentioned,
+        mentioned=True,
+        direct_address=True,
     )
     if reply_mode is None:
         return
