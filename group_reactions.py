@@ -49,17 +49,23 @@ def contains_blacklisted(text: str) -> bool:
 
 def detect_label(text: str) -> str:
     lowered = clean_text(text)
-    if any(word in lowered for word in ("?", "почему", "как", "что", "кто", "где", "когда")):
+    if any(word in lowered for word in ("?", "почему", "как", "что", "кто", "где", "когда", "зачем", "разве")):
         return "question"
-    if any(word in lowered for word in ("ахах", "лол", "ржу", "шут", "прикол", "lol", "lmao")):
+    if any(word in lowered for word in ("ахах", "хаха", "лол", "ржу", "шут", "прикол", "lol", "lmao", "xd")):
         return "funny"
-    if any(word in lowered for word in ("жесть", "мощно", "топ", "огонь", "база", "🔥")):
+    if any(word in lowered for word in ("жесть", "мощно", "топ", "огонь", "база", "разнос", "легенда")):
         return "hype"
-    if any(word in lowered for word in ("груст", "жалк", "обидн", "sad")):
+    if any(word in lowered for word in ("неа", "не факт", "сомнитель", "вряд", "спорно", "не думаю", "не соглаш")):
+        return "disagreement"
+    if any(word in lowered for word in ("согл", "реал", "именно", "в точку", "факт", "конечно", "верно")):
+        return "agreement"
+    if any(word in lowered for word in ("ничего себе", "шок", "неожидан", "wtf", "omg", "чего")):
+        return "shock"
+    if any(word in lowered for word in ("груст", "жалк", "обидн", "печаль", "тяжело", "сочув")):
         return "sad"
-    if any(word in lowered for word in ("люби", "мил", "❤️", "love")):
+    if any(word in lowered for word in ("люби", "мил", "кайф", "❤️", "love", "тепло")):
         return "love"
-    if any(word in lowered for word in ("злой", "бесит", "злит", "rage")):
+    if any(word in lowered for word in ("бесит", "злит", "злой", "ненавиж", "раздраж", "rage")):
         return "anger"
     if any(word in lowered for word in GREETING_WORDS):
         return "greeting"
@@ -140,13 +146,15 @@ async def human_delay():
 async def send_reaction(event, emoji: str, label: str):
     try:
         await human_delay()
-        await client(functions.messages.SendReactionRequest(
-            peer=event.chat_id,
-            msg_id=event.id,
-            big=random.random() < 0.35,
-            add_to_recent=True,
-            reaction=[types.ReactionEmoji(emoticon=emoji)]
-        ))
+        await client(
+            functions.messages.SendReactionRequest(
+                peer=event.chat_id,
+                msg_id=event.id,
+                big=random.random() < 0.35,
+                add_to_recent=True,
+                reaction=[types.ReactionEmoji(emoticon=emoji)],
+            )
+        )
         print(f"Reacted {emoji} to message {event.id} in chat {event.chat_id}")
     except FloodWaitError as e:
         print(f"FloodWait on reaction: sleeping for {e.seconds} seconds")
@@ -238,8 +246,10 @@ async def handle_group_message(event):
     if not should_reply:
         if label == "question":
             should_reply = random.random() < 0.12
-        elif label in {"funny", "hype", "greeting"}:
-            should_reply = random.random() < 0.06
+        elif label in {"funny", "hype", "greeting", "shock", "agreement"}:
+            should_reply = random.random() < 0.08
+        elif label in {"disagreement", "sad", "love", "anger"}:
+            should_reply = random.random() < 0.05
         else:
             should_reply = random.random() < 0.02
 
