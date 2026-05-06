@@ -9,6 +9,7 @@ from group_reactions import (
     get_local_hour,
     handle_group_message,
     maybe_start_inactivity_loop,
+    load_top_reactions,
     sync_bot_identity,
 )
 from health_server import run_health_server
@@ -68,6 +69,7 @@ async def run_bot_forever():
 
             me = await client.get_me()
             sync_bot_identity(me)
+            await load_top_reactions(client)
             print(
                 f"{BOT_NAME} {BOT_VERSION} [{BOT_STAGE}] logged in as: "
                 f"{me.first_name} (@{me.username})"

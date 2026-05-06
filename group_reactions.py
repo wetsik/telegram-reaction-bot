@@ -7,7 +7,7 @@ from collections import defaultdict
 from telethon import functions, types
 from telethon.errors import FloodWaitError
 
-from group_data import BLACKLIST_CONTAINS, GREETING_WORDS, REACTIONS, SAFE_EMOJIS
+from group_data import BLACKLIST_CONTAINS, GREETING_WORDS, SAFE_EMOJIS
 from group_state import build_chat_memory, chat_state, recent_bot_texts, recent_messages, remember_user_message
 from reply_templates import choose_delivery_mode, describe_image_for_chat, generate_context_reply
 from settings import BOT_NAME, BOT_NAME_HINTS, ENABLE_REACTIONS, ENABLE_TEXT_REPLIES, MAX_DELAY, MIN_DELAY
@@ -19,6 +19,7 @@ message_counts: dict[int, int] = defaultdict(int)
 reaction_state_by_chat: dict[int, dict[str, int]] = defaultdict(
     lambda: {"next_reaction_at": random.randint(3, 8), "burst_remaining": 0}
 )
+available_reaction_emojis: list[str] = list(dict.fromkeys(SAFE_EMOJIS))
 
 REACTION_GAP_MIN = 3
 REACTION_GAP_MAX = 8
@@ -40,6 +41,40 @@ def _spontaneous_reply_chance(label: str) -> float:
 def configure_group_services(telegram_client):
     global client
     client = telegram_client
+
+
+def _normalize_reaction_emoji(emoji: str) -> str:
+    return (emoji or "").replace("\ufe0f", "").strip()
+
+
+def _refresh_available_reaction_emojis(emojis: list[str]) -> None:
+    global available_reaction_emojis
+    cleaned = []
+    seen = set()
+    for emoji in emojis:
+        normalized = _normalize_reaction_emoji(emoji)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        cleaned.append(normalized)
+    if cleaned:
+        available_reaction_emojis = cleaned
+
+
+async def load_top_reactions(telegram_client, limit: int = 100) -> int:
+    try:
+        result = await telegram_client(functions.messages.GetTopReactionsRequest(limit=limit, hash=0))
+        reactions = getattr(result, "reactions", None) or []
+        emojis: list[str] = []
+        for reaction in reactions:
+            if isinstance(reaction, types.ReactionEmoji):
+                emojis.append(reaction.emoticon)
+        _refresh_available_reaction_emojis(emojis)
+        print(f"Loaded {len(available_reaction_emojis)} top reactions from Telegram")
+        return len(available_reaction_emojis)
+    except Exception as error:
+        print(f"Top reactions load failed: {type(error).__name__}: {error}")
+        return len(available_reaction_emojis)
 
 
 def sync_bot_identity(me):
@@ -133,7 +168,7 @@ def is_greeting_for_bot(text: str, mentioned: bool) -> bool:
 
 
 def pick_reaction_by_label(label: str) -> str:
-    pool = REACTIONS.get(label) or REACTIONS["neutral"]
+    pool = available_reaction_emojis or SAFE_EMOJIS
     return random.choice(pool or SAFE_EMOJIS)
 
 
@@ -157,6 +192,9 @@ async def human_delay():
 
 async def send_reaction(event, emoji: str, label: str):
     try:
+        emoji = _normalize_reaction_emoji(emoji)
+        if emoji not in available_reaction_emojis:
+            emoji = random.choice(available_reaction_emojis or SAFE_EMOJIS)
         await human_delay()
         await client(
             functions.messages.SendReactionRequest(
@@ -172,6 +210,26 @@ async def send_reaction(event, emoji: str, label: str):
         print(f"FloodWait on reaction: sleeping for {e.seconds} seconds")
         await asyncio.sleep(e.seconds)
     except Exception as e:
+        if "Invalid reaction provided" in str(e):
+            bad_emoji = _normalize_reaction_emoji(emoji)
+            if bad_emoji in available_reaction_emojis and len(available_reaction_emojis) > 1:
+                available_reaction_emojis.remove(bad_emoji)
+                replacement = random.choice(available_reaction_emojis or SAFE_EMOJIS)
+                try:
+                    await client(
+                        functions.messages.SendReactionRequest(
+                            peer=event.chat_id,
+                            msg_id=event.id,
+                            big=random.random() < 0.35,
+                            add_to_recent=True,
+                            reaction=[types.ReactionEmoji(emoticon=replacement)],
+                        )
+                    )
+                    print(f"Reacted {replacement} to message {event.id} in chat {event.chat_id}")
+                    return
+                except Exception as retry_error:
+                    print(f"ERROR while reacting: {retry_error}")
+                    return
         print(f"ERROR while reacting: {e}")
 
 
