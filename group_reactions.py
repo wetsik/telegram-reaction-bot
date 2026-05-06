@@ -7,6 +7,7 @@ from telethon import functions, types
 from telethon.errors import FloodWaitError
 
 from group_data import BLACKLIST_CONTAINS, GREETING_WORDS, REACTIONS, SAFE_EMOJIS
+from group_state import build_chat_memory, recent_bot_texts, recent_messages, remember_user_message
 from reply_templates import choose_delivery_mode, describe_image_for_chat, generate_context_reply
 from settings import BOT_NAME, BOT_NAME_HINTS, ENABLE_REACTIONS, ENABLE_TEXT_REPLIES, MAX_DELAY, MIN_DELAY
 from time_utils import get_local_hour as _get_local_hour
@@ -173,6 +174,7 @@ async def send_text(event, text: str, reply_mode: str = "reply"):
                 await event.reply(text)
             except Exception:
                 await client.send_message(event.chat_id, text)
+        recent_bot_texts[event.chat_id].append(text)
         print(f"Sent text '{text}' to chat {event.chat_id}")
     except FloodWaitError as e:
         print(f"FloodWait on text: sleeping for {e.seconds} seconds")
@@ -207,6 +209,8 @@ async def handle_group_message(event):
     message_counts[chat_id] += 1
     reaction_state = reaction_state_by_chat[chat_id]
     label = detect_label(cleaned)
+    speaker_name = remember_user_message(chat_id, sender, cleaned)
+    recent_messages[chat_id].append(f"{speaker_name}: {cleaned}")
 
     reply_to_bot = False
     if event.is_reply:
@@ -258,12 +262,13 @@ async def handle_group_message(event):
 
     reply = await generate_context_reply(
         text=text,
-        context_messages=[],
-        chat_memory="",
-        speaker_name=getattr(sender, "first_name", None) or getattr(sender, "username", None) or "unknown",
+        context_messages=list(recent_messages[chat_id]),
+        chat_memory=build_chat_memory(chat_id),
+        speaker_name=speaker_name,
         bot_names=[BOT_NAME, *BOT_NAME_HINTS],
         label=label,
         mentioned=mentioned,
+        recent_bot_texts=list(recent_bot_texts[chat_id]),
     )
     if not reply:
         return
