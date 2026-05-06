@@ -1,13 +1,14 @@
 import asyncio
 import random
 import re
+import time
 from collections import defaultdict
 
 from telethon import functions, types
 from telethon.errors import FloodWaitError
 
 from group_data import BLACKLIST_CONTAINS, GREETING_WORDS, REACTIONS, SAFE_EMOJIS
-from group_state import build_chat_memory, recent_bot_texts, recent_messages, remember_user_message
+from group_state import build_chat_memory, chat_state, recent_bot_texts, recent_messages, remember_user_message
 from reply_templates import choose_delivery_mode, describe_image_for_chat, generate_context_reply
 from settings import BOT_NAME, BOT_NAME_HINTS, ENABLE_REACTIONS, ENABLE_TEXT_REPLIES, MAX_DELAY, MIN_DELAY
 from time_utils import get_local_hour as _get_local_hour
@@ -24,6 +25,16 @@ REACTION_GAP_MAX = 8
 REACTION_BURST_CHANCE = 0.28
 REACTION_BURST_EXTRA_MIN = 1
 REACTION_BURST_EXTRA_MAX = 2
+
+
+def _spontaneous_reply_chance(label: str) -> float:
+    if label == "question":
+        return 0.35
+    if label in {"funny", "hype", "greeting", "shock", "agreement"}:
+        return 0.28
+    if label in {"disagreement", "sad", "love", "anger"}:
+        return 0.24
+    return 0.20
 
 
 def configure_group_services(telegram_client):
@@ -248,14 +259,15 @@ async def handle_group_message(event):
 
     should_reply = bool(reply_to_bot)
     if not should_reply:
-        if label == "question":
-            should_reply = random.random() < 0.18
-        elif label in {"funny", "hype", "greeting", "shock", "agreement"}:
-            should_reply = random.random() < 0.16
-        elif label in {"disagreement", "sad", "love", "anger"}:
-            should_reply = random.random() < 0.12
+        base_chance = _spontaneous_reply_chance(label)
+        last_text_at = chat_state[chat_id]["last_text_at"]
+        if last_text_at and (time.time() - last_text_at) > 300:
+            base_chance += 0.08
+
+        if message_counts[chat_id] >= 4 and message_counts[chat_id] % random.randint(3, 5) == 0:
+            should_reply = True
         else:
-            should_reply = random.random() < 0.10
+            should_reply = random.random() < base_chance
 
     if not should_reply:
         return
