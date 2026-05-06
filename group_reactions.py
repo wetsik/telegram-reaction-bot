@@ -195,7 +195,19 @@ async def handle_group_message(event):
     if ENABLE_REACTIONS and message_counts[chat_id] % 10 == 0:
         await send_reaction(event, pick_reaction_by_label(label), label)
 
-    if not ENABLE_TEXT_REPLIES or not reply_to_bot:
+    if not ENABLE_TEXT_REPLIES:
+        return
+
+    should_reply = bool(reply_to_bot)
+    if not should_reply:
+        if label == "question":
+            should_reply = random.random() < 0.12
+        elif label in {"funny", "hype", "greeting"}:
+            should_reply = random.random() < 0.06
+        else:
+            should_reply = random.random() < 0.02
+
+    if not should_reply:
         return
 
     reply = await generate_context_reply(
@@ -213,8 +225,8 @@ async def handle_group_message(event):
     reply_mode = choose_delivery_mode(
         text=text,
         label=label,
-        mentioned=True,
-        direct_address=True,
+        mentioned=bool(reply_to_bot),
+        direct_address=bool(reply_to_bot),
     )
     if reply_mode is None:
         return
