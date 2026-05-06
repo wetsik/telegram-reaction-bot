@@ -4,6 +4,7 @@ import re
 import shutil
 import traceback
 import uuid
+import sys
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -498,6 +499,8 @@ async def separate_vocals(input_file: Path, job_id: str, reporter: StatusReporte
     await reporter.update("Starting Demucs", force=True)
     print(f"Starting Demucs job={job_id} input={input_file}")
     process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
         "demucs",
         "-n",
         "htdemucs",
