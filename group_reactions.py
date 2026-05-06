@@ -14,6 +14,15 @@ from time_utils import get_local_hour as _get_local_hour
 
 client = None
 message_counts: dict[int, int] = defaultdict(int)
+reaction_state_by_chat: dict[int, dict[str, int]] = defaultdict(
+    lambda: {"next_reaction_at": random.randint(3, 8), "burst_remaining": 0}
+)
+
+REACTION_GAP_MIN = 3
+REACTION_GAP_MAX = 8
+REACTION_BURST_CHANCE = 0.28
+REACTION_BURST_EXTRA_MIN = 1
+REACTION_BURST_EXTRA_MAX = 2
 
 
 def configure_group_services(telegram_client):
@@ -110,6 +119,20 @@ def pick_reaction_by_label(label: str) -> str:
     return random.choice(pool or SAFE_EMOJIS)
 
 
+def _schedule_next_reaction(state: dict[str, int], current_count: int) -> None:
+    state["next_reaction_at"] = current_count + random.randint(REACTION_GAP_MIN, REACTION_GAP_MAX)
+
+
+def _maybe_start_burst(state: dict[str, int]) -> None:
+    if random.random() < REACTION_BURST_CHANCE:
+        state["burst_remaining"] = random.randint(
+            REACTION_BURST_EXTRA_MIN,
+            REACTION_BURST_EXTRA_MAX,
+        )
+    else:
+        state["burst_remaining"] = 0
+
+
 async def human_delay():
     await asyncio.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
 
@@ -174,6 +197,7 @@ async def handle_group_message(event):
         return
 
     message_counts[chat_id] += 1
+    reaction_state = reaction_state_by_chat[chat_id]
     label = detect_label(cleaned)
 
     reply_to_bot = False
@@ -192,7 +216,19 @@ async def handle_group_message(event):
 
     mentioned = bool(event.is_private or reply_to_bot or any(name and name in cleaned for name in BOT_NAME_HINTS))
 
-    if ENABLE_REACTIONS and message_counts[chat_id] % 10 == 0:
+    should_react = False
+    if ENABLE_REACTIONS:
+        if reaction_state["burst_remaining"] > 0:
+            should_react = True
+            reaction_state["burst_remaining"] -= 1
+            if reaction_state["burst_remaining"] == 0:
+                _schedule_next_reaction(reaction_state, message_counts[chat_id])
+        elif message_counts[chat_id] >= reaction_state["next_reaction_at"]:
+            should_react = True
+            _maybe_start_burst(reaction_state)
+            _schedule_next_reaction(reaction_state, message_counts[chat_id])
+
+    if should_react:
         await send_reaction(event, pick_reaction_by_label(label), label)
 
     if not ENABLE_TEXT_REPLIES:
