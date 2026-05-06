@@ -27,7 +27,6 @@ from settings import (
     TEST_INIT_PRIVATE_ONLY,
     TZ_OFFSET,
 )
-from private_greeting import maybe_send_private_greeting
 from vocal_remover import handle_private_vocal_remover
 
 
@@ -46,8 +45,6 @@ async def handle_new_message(event):
             return
 
         if event.is_private:
-            await maybe_send_private_greeting(event, client)
-
             handled = await handle_private_vocal_remover(event, client)
             if handled:
                 return
