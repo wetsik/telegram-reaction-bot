@@ -4,8 +4,6 @@ import random
 import re
 from collections import Counter
 
-from mock_knowledge import SMART_DATABASE
-
 
 STOPWORDS = {
     "и",
@@ -59,22 +57,6 @@ STOPWORDS = {
     "их",
 }
 
-QUESTION_HINTS = {
-    "почему",
-    "зачем",
-    "как",
-    "что",
-    "кто",
-    "где",
-    "когда",
-    "сколько",
-    "куда",
-    "откуда",
-    "чем",
-    "чё",
-    "че",
-}
-
 
 def _clean_reply(text: str) -> str:
     return " ".join((text or "").strip().split())
@@ -123,7 +105,7 @@ def _extract_topic(*texts: str) -> str | None:
     return topic
 
 
-def _choose_from_bank(bank: list[str], recent_replies: list[str] | None = None) -> str:
+def _choose_short(bank: list[str], recent_replies: list[str] | None = None) -> str:
     if not bank:
         return ""
 
@@ -133,111 +115,58 @@ def _choose_from_bank(bank: list[str], recent_replies: list[str] | None = None) 
     return random.choice(pool)
 
 
-def _add_topic_phrase(base: str, topic: str | None, label: str, text: str) -> str:
+def _format_short_reply(label: str, topic: str | None, base: str) -> str:
     if not topic:
         return base
 
     if label == "question":
-        templates = [
-            f"если про {topic}, то тут важен контекст",
-            f"по {topic} я бы не отвечал в лоб",
-            f"если коротко про {topic}, то не всё так просто",
-        ]
-        if "?" in text or any(hint in text.lower() for hint in QUESTION_HINTS):
-            return f"{random.choice(templates)}, {base}"
-        return f"{base}, если смотреть на {topic}"
-
+        return random.choice(
+            [
+                f"{base} про {topic}",
+                f"{base}, если про {topic}",
+                f"{base} на {topic}",
+            ]
+        )
     if label in {"agreement", "hype"}:
-        templates = [
-            f"по {topic} это уже выглядит логично",
-            f"{topic} тут реально решает",
-            f"вокруг {topic} как раз и крутится смысл",
-        ]
-        return f"{base}. {random.choice(templates)}"
-
+        return random.choice(
+            [
+                f"{base}, {topic} да",
+                f"{base} по {topic}",
+                f"{base} и всё",
+            ]
+        )
     if label in {"disagreement", "sad", "anger"}:
-        templates = [
-            f"с {topic} тут легко промахнуться",
-            f"по {topic} лучше не торопиться с выводами",
-            f"в {topic} как раз и прячется подвох",
-        ]
-        return f"{base}. {random.choice(templates)}"
-
+        return random.choice(
+            [
+                f"{base}, {topic} спорно",
+                f"{base} по {topic}",
+                f"{base} и ладно",
+            ]
+        )
     if label == "neutral":
-        templates = [
-            f"по {topic} это уже отдельный разговор",
-            f"{topic} сам по себе многое меняет",
-            f"в {topic} часто и сидит суть",
-        ]
-        if random.random() < 0.45:
-            return f"{base}. {random.choice(templates)}"
-
+        return random.choice(
+            [
+                f"{base} про {topic}",
+                f"{base}, {topic} кстати",
+                f"{base} и всё",
+            ]
+        )
     return base
 
 
-def _smart_build_reply(
-    *,
-    label: str,
-    text: str,
-    context_messages: list[str],
-    chat_memory: str,
-    speaker_name: str,
-    recent_bot_texts: list[str] | None = None,
-) -> str:
-    recent_context = context_messages[-5:]
-    topic = _extract_topic(text, chat_memory, *recent_context)
-
-    if label == "question":
-        bank = SMART_DATABASE["explanation"]
-        base = _choose_from_bank(bank, recent_bot_texts)
-        if random.random() < 0.35:
-            base = _choose_from_bank(SMART_DATABASE["practical"], recent_bot_texts)
-    elif label == "agreement":
-        base = _choose_from_bank(SMART_DATABASE["social"], recent_bot_texts)
-    elif label == "disagreement":
-        base = _choose_from_bank(SMART_DATABASE["deep"], recent_bot_texts)
-    elif label == "funny":
-        base = _choose_from_bank(
-            [
-                "ахах, норм вынесло",
-                "тут уже почти стендап",
-                "ну да, это сильно",
-                "чату такое заходит",
-            ],
-            recent_bot_texts,
-        )
-    elif label == "shock":
-        base = _choose_from_bank(SMART_DATABASE["social"], recent_bot_texts)
-    elif label == "hype":
-        base = _choose_from_bank(SMART_DATABASE["practical"], recent_bot_texts)
-    elif label in {"sad", "anger", "love"}:
-        base = _choose_from_bank(SMART_DATABASE["deep"], recent_bot_texts)
-    elif label == "greeting":
-        base = _choose_from_bank(
-            [
-                "йо",
-                "привет",
-                "ку",
-                "да, я на связи",
-                f"йо, {speaker_name}",
-            ],
-            recent_bot_texts,
-        )
-    else:
-        base = _choose_from_bank(SMART_DATABASE["neutral"], recent_bot_texts)
-
-    if label in {"question", "agreement", "disagreement", "hype", "neutral"}:
-        base = _add_topic_phrase(base, topic, label, text)
-
-    if label == "question" and random.random() < 0.4:
-        base = f"{base}. {random.choice(SMART_DATABASE['deep'])}"
-    elif label == "neutral" and random.random() < 0.25:
-        base = f"{base}. {random.choice(SMART_DATABASE['social'])}"
-
-    if speaker_name and label in {"greeting", "question"} and random.random() < 0.2:
-        base = f"{speaker_name}, {base}"
-
-    return _clean_reply(base)
+SHORT_BANKS = {
+    "greeting": ["йо", "привет", "ку", "да, на связи"],
+    "question": ["не факт", "зависит", "не уверен", "тут сложнее", "возможно"],
+    "agreement": ["согласен", "да", "точно", "база", "в точку"],
+    "disagreement": ["неа", "сомнительно", "вряд ли", "не факт"],
+    "funny": ["ахах", "жёстко", "ну да", "ору"],
+    "shock": ["ого", "жесть", "ничего себе"],
+    "hype": ["топ", "огонь", "жёстко", "база"],
+    "sad": ["жаль", "обидно", "держись"],
+    "love": ["мило", "кайф", "тепло"],
+    "anger": ["жесть", "да уж", "бесит"],
+    "neutral": ["понятно", "ладно", "бывает", "норм", "окей"],
+}
 
 
 def choose_delivery_mode(*, text: str, label: str, mentioned: bool, direct_address: bool) -> str | None:
@@ -269,16 +198,16 @@ async def generate_context_reply(
         if detected in {"funny", "shock", "sad", "love", "anger", "greeting"} and random.random() > 0.18:
             return None
 
-    reply = _smart_build_reply(
-        label=detected,
-        text=text,
-        context_messages=context_messages,
-        chat_memory=chat_memory,
-        speaker_name=speaker_name,
-        recent_bot_texts=recent_bot_texts,
-    )
-    if not reply:
-        return None
+    base = _choose_short(SHORT_BANKS.get(detected, SHORT_BANKS["neutral"]), recent_bot_texts)
+    topic = _extract_topic(text, chat_memory, *(context_messages[-3:] if context_messages else []))
+    reply = _format_short_reply(detected, topic, base)
+
+    if speaker_name and detected == "greeting" and random.random() < 0.2:
+        reply = f"{speaker_name}, {reply}"
+
+    reply = _clean_reply(reply)
+    if len(reply) > 32:
+        reply = reply[:32].rstrip()
     return reply
 
 
