@@ -9,6 +9,7 @@ from telethon.errors import FloodWaitError
 from group_data import BLACKLIST_CONTAINS, GREETING_WORDS, REACTIONS, SAFE_EMOJIS
 from reply_templates import choose_delivery_mode, describe_image_for_chat, generate_context_reply
 from settings import BOT_NAME, BOT_NAME_HINTS, ENABLE_REACTIONS, ENABLE_TEXT_REPLIES, MAX_DELAY, MIN_DELAY
+from time_utils import get_local_hour as _get_local_hour
 
 
 client = None
@@ -239,3 +240,7 @@ async def handle_group_message(event):
 
 def maybe_start_inactivity_loop(current_task):
     return current_task
+
+
+def get_local_hour() -> int:
+    return _get_local_hour()
