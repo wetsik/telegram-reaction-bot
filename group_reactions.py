@@ -245,13 +245,13 @@ async def handle_group_message(event):
     should_reply = bool(reply_to_bot)
     if not should_reply:
         if label == "question":
-            should_reply = random.random() < 0.36
+            should_reply = random.random() < 0.18
         elif label in {"funny", "hype", "greeting", "shock", "agreement"}:
-            should_reply = random.random() < 0.24
+            should_reply = random.random() < 0.16
         elif label in {"disagreement", "sad", "love", "anger"}:
-            should_reply = random.random() < 0.15
+            should_reply = random.random() < 0.12
         else:
-            should_reply = random.random() < 0.06
+            should_reply = random.random() < 0.10
 
     if not should_reply:
         return
