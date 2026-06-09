@@ -159,7 +159,8 @@ async def generate_context_reply(
             speaker_name=speaker_name,
             bot_names=bot_names,
         )
-        answer = await ask_westforge(prompt)
+        # Прямое обращение — ждём модель; спонтанный трёп не ждёт очередь.
+        answer = await ask_westforge(prompt, wait=mentioned)
         if answer and not _looks_like_prompt_echo(answer) and not _has_bad_script(answer):
             cleaned = _strip_for_chat(answer)
             if cleaned and not _looks_like_prompt_echo(cleaned):

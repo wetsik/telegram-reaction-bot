@@ -5,17 +5,38 @@ import aiohttp
 from settings import WESTFORGE_API_KEY, WESTFORGE_API_URL, WESTFORGE_TIMEOUT
 
 
-async def ask_westforge(message: str) -> str | None:
+# Модель слабая и обрабатывает по одному запросу за раз. Сериализуем обращения,
+# чтобы не плодить очередь и не складывать задержки в активных чатах.
+_lock = asyncio.Lock()
+
+
+def is_busy() -> bool:
+    return _lock.locked()
+
+
+async def ask_westforge(message: str, *, wait: bool = False) -> str | None:
     """Send a single prompt to the WestForge AI model and return its answer.
 
     The API accepts only one string field ("message") and replies with
     {"success": true, "answer": "..."}. Returns None on any failure so the
     caller can fall back gracefully — the model is slow and not always up.
+
+    wait=False: если модель уже занята другим запросом — сразу вернуть None
+    (вызывающий возьмёт мгновенный шаблон), чтобы не ждать очередь.
+    wait=True: дождаться своей очереди (для прямого обращения к боту).
     """
     message = (message or "").strip()
     if not message or not WESTFORGE_API_KEY:
         return None
 
+    if not wait and _lock.locked():
+        return None
+
+    async with _lock:
+        return await _do_request(message)
+
+
+async def _do_request(message: str) -> str | None:
     headers = {
         "Content-Type": "application/json",
         "x-api-key": WESTFORGE_API_KEY,
