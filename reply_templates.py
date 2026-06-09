@@ -3,34 +3,20 @@ from __future__ import annotations
 import random
 import re
 
+from ai_client import ask_westforge
+from emotions import detect_label as _detect_label
+from message_db import random_learned_reply
+from settings import (
+    AI_ALWAYS_WHEN_MENTIONED,
+    AI_REPLY_CHANCE,
+    ENABLE_AI_REPLIES,
+    ENABLE_MESSAGE_DB,
+    LEARNED_REPLY_CHANCE,
+)
+
 
 def _clean_reply(text: str) -> str:
     return " ".join((text or "").strip().split())
-
-
-def _detect_label(text: str) -> str:
-    normalized = (text or "").lower()
-    if any(word in normalized for word in ("?", "почему", "как", "что", "кто", "где", "когда", "зачем", "разве")):
-        return "question"
-    if any(word in normalized for word in ("ахах", "хаха", "лол", "ржу", "шут", "прикол", "lol", "lmao", "xd")):
-        return "funny"
-    if any(word in normalized for word in ("жесть", "мощно", "топ", "огонь", "база", "разнос", "легенда")):
-        return "hype"
-    if any(word in normalized for word in ("неа", "не факт", "сомнитель", "вряд", "спорно", "не думаю", "не соглаш")):
-        return "disagreement"
-    if any(word in normalized for word in ("согл", "реал", "именно", "в точку", "факт", "конечно", "верно")):
-        return "agreement"
-    if any(word in normalized for word in ("ничего себе", "шок", "неожидан", "wtf", "omg", "чего")):
-        return "shock"
-    if any(word in normalized for word in ("груст", "жалк", "обидн", "печаль", "тяжело", "сочув")):
-        return "sad"
-    if any(word in normalized for word in ("люби", "мил", "кайф", "❤️", "love", "тепло")):
-        return "love"
-    if any(word in normalized for word in ("бесит", "злит", "злой", "ненавиж", "раздраж", "rage")):
-        return "anger"
-    if any(word in normalized for word in ("привет", "здарова", "здравствуй", "салам", "ку", "hello", "hi", "hey", "yo")):
-        return "greeting"
-    return "neutral"
 
 
 SHORT_BANKS = {
@@ -45,6 +31,17 @@ SHORT_BANKS = {
     "love": ["мило", "кайф", "тепло"],
     "anger": ["жесть", "да уж", "бесит"],
     "neutral": ["понятно", "ладно", "бывает", "норм", "окей"],
+    "joy": ["кайф", "класс", "топ"],
+    "gratitude": ["не за что", "обращайся", "всегда рад"],
+    "curiosity": ["интересно", "а расскажи", "любопытно"],
+    "sarcasm": ["ну да, конечно", "ага", "как скажешь"],
+    "support": ["держись", "ты сможешь", "всё получится"],
+    "pride": ["красава", "сила", "уважение"],
+    "boredom": ["скучно", "ну такое", "вяло"],
+    "fear": ["жутковато", "страшно", "ну его"],
+    "celebration": ["поздравляю", "ура", "красава"],
+    "cringe": ["ну это кринж", "жесть", "фу"],
+    "cool": ["круто", "стильно", "найс"],
 }
 
 
@@ -56,6 +53,83 @@ def choose_delivery_mode(*, text: str, label: str, mentioned: bool, direct_addre
     return "reply"
 
 
+_EMOJI_RE = re.compile(
+    "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF\U0000FE0F\U00002190-\U000021FF]"
+)
+
+
+def _strip_for_chat(text: str) -> str:
+    """Make the model output look like a casual chat line: no quotes, no emoji,
+    no markdown, single short phrase."""
+    text = _EMOJI_RE.sub("", text or "")
+    text = text.replace("*", "").replace("`", "").replace("#", "")
+    text = " ".join(text.split())
+    text = text.strip().strip("\"'«»“”").strip()
+    # keep it to a single short line
+    for sep in ("\n", ". ", "! ", "? "):
+        if sep in text:
+            head = text.split(sep)[0]
+            if sep != "\n":
+                head += sep.strip()
+            text = head.strip()
+            break
+    if len(text) > 120:
+        text = text[:117].rstrip() + "..."
+    return text
+
+
+_ECHO_MARKERS = (
+    "твой короткий ответ",
+    "новое сообщение от",
+    "последние сообщения чата",
+    "не ассистент",
+    "telegram-чата",
+    "без кавычек",
+    "по-русски",
+)
+
+
+def _looks_like_prompt_echo(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in _ECHO_MARKERS)
+
+
+# qwen — китайская модель и иногда «уплывает» в иероглифы/кану/хангыль.
+_CJK_RE = re.compile(r"[぀-ヿ㐀-䶿一-鿿가-힯]")
+
+
+def _has_bad_script(text: str) -> bool:
+    return bool(_CJK_RE.search(text or ""))
+
+
+def _build_prompt(
+    *,
+    text: str,
+    context_messages: list[str],
+    speaker_name: str,
+    bot_names: list[str],
+) -> str:
+    recent = [m for m in context_messages[-6:] if m.strip()]
+    context = "\n".join(recent)
+    bot_identity = ", ".join(name for name in bot_names if name) or "westik"
+
+    parts = [
+        f"Ты — {bot_identity}, свой парень в Telegram-чате. Не ассистент и не помощник.",
+        "Пиши по-русски, коротко и по-простому, как пишут друзья в чате.",
+        "Максимум 8 слов, обычно одна фраза. Можно с маленькой буквы и без точки в конце.",
+        "Без вежливых форм (никаких 'пожалуйста', 'рекомендую', 'здравствуйте'), без официоза.",
+        "Без эмодзи, без кавычек, без списков, без форматирования.",
+        "Только русский язык. Никаких иероглифов и английских слов.",
+        "Никогда не говори, что ты бот, ИИ, модель или помощник. Не предлагай помощь.",
+        "Отвечай спокойно и по сути, не растекайся.",
+    ]
+    if context:
+        parts.append(f"\nПоследние сообщения чата:\n{context}")
+    parts.append(f"\nНовое сообщение от {speaker_name}: {text}")
+    parts.append("\nТвой короткий ответ:")
+    return "\n".join(parts)
+
+
 async def generate_context_reply(
     *,
     text: str,
@@ -65,20 +139,42 @@ async def generate_context_reply(
     bot_names: list[str],
     label: str,
     mentioned: bool,
+    chat_id: int | None = None,
     recent_bot_texts: list[str] | None = None,
 ) -> str | None:
     detected = label if label and label != "neutral" else _detect_label(text)
-
-    if not mentioned:
-        if detected == "neutral" and random.random() > 0.07:
-            return None
-        if detected in {"question", "agreement", "disagreement", "hype"} and random.random() > 0.28:
-            return None
-        if detected in {"funny", "shock", "sad", "love", "anger", "greeting"} and random.random() > 0.18:
-            return None
-
-    bank = SHORT_BANKS.get(detected, SHORT_BANKS["neutral"])
     recent_set = {_clean_reply(item).lower() for item in (recent_bot_texts or []) if item}
+
+    # Решаем, тратить ли медленную модель на этот ответ. Прямое обращение —
+    # всегда ИИ; спонтанный трёп — только с шансом AI_REPLY_CHANCE, иначе
+    # лёгкий текст-помощник из шаблонов.
+    use_ai = ENABLE_AI_REPLIES and (
+        (mentioned and AI_ALWAYS_WHEN_MENTIONED) or random.random() < AI_REPLY_CHANCE
+    )
+
+    if use_ai:
+        prompt = _build_prompt(
+            text=text,
+            context_messages=context_messages,
+            speaker_name=speaker_name,
+            bot_names=bot_names,
+        )
+        answer = await ask_westforge(prompt)
+        if answer and not _looks_like_prompt_echo(answer) and not _has_bad_script(answer):
+            cleaned = _strip_for_chat(answer)
+            if cleaned and not _looks_like_prompt_echo(cleaned):
+                return cleaned
+
+    # «Выученная» фраза: реальный текст людей из этого чата (с эмодзи) —
+    # делает бота своим в чате. Только когда не отвечаем через ИИ.
+    if ENABLE_MESSAGE_DB and chat_id is not None and random.random() < LEARNED_REPLY_CHANCE:
+        learned = await random_learned_reply(chat_id, label=detected, exclude=recent_set)
+        if learned:
+            return learned
+
+    # Тексты-помощники: короткий шаблонный банк (когда ИИ выключен/не выпал по
+    # шансу/недоступен/пустой ответ).
+    bank = SHORT_BANKS.get(detected, SHORT_BANKS["neutral"])
     choices = [item for item in bank if item.lower() not in recent_set] or bank
     reply = random.choice(choices)
 

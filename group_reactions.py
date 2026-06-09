@@ -7,11 +7,22 @@ from collections import defaultdict
 from telethon import functions, types
 from telethon.errors import FloodWaitError
 
-from group_data import BLACKLIST_CONTAINS, GREETING_WORDS, SAFE_EMOJIS
+from emotions import detect_emotion, detect_label
+from group_data import BLACKLIST_CONTAINS, GREETING_WORDS, REACTIONS, SAFE_EMOJIS
 from group_state import build_chat_memory, chat_state, recent_bot_texts, recent_messages, remember_user_message
+from message_db import popular_emojis, save_message
 from reply_templates import choose_delivery_mode, describe_image_for_chat, generate_context_reply
-from settings import BOT_NAME, BOT_NAME_HINTS, ENABLE_REACTIONS, ENABLE_TEXT_REPLIES, MAX_DELAY, MIN_DELAY
-from time_utils import get_local_hour as _get_local_hour
+from settings import (
+    BOT_NAME,
+    BOT_NAME_HINTS,
+    CHAT_EMOJI_CHANCE,
+    ENABLE_MESSAGE_DB,
+    ENABLE_REACTIONS,
+    ENABLE_TEXT_REPLIES,
+    MAX_DELAY,
+    MESSAGE_SAVE_CHANCE,
+    MIN_DELAY,
+)
 
 
 client = None
@@ -61,6 +72,29 @@ def _refresh_available_reaction_emojis(emojis: list[str]) -> None:
         available_reaction_emojis = cleaned
 
 
+async def load_available_reactions(telegram_client) -> int:
+    """Глобальный список валидных реакций Telegram. В отличие от GetTopReactions,
+    обычно доступен и бот-аккаунтам. Гарантирует, что мы шлём только настоящие
+    реакции (а не любой эмодзи) — это убирает 'Invalid reaction provided'."""
+    try:
+        result = await telegram_client(functions.messages.GetAvailableReactionsRequest(hash=0))
+        reactions = getattr(result, "reactions", None) or []
+        emojis: list[str] = []
+        for reaction in reactions:
+            if getattr(reaction, "inactive", False):
+                continue
+            emoticon = getattr(reaction, "reaction", None)
+            emoticon = getattr(emoticon, "emoticon", None) or getattr(reaction, "emoticon", None)
+            if emoticon:
+                emojis.append(emoticon)
+        _refresh_available_reaction_emojis(emojis)
+        print(f"Loaded {len(available_reaction_emojis)} available reactions from Telegram")
+        return len(available_reaction_emojis)
+    except Exception as error:
+        print(f"Available reactions load failed: {type(error).__name__}: {error}")
+        return len(available_reaction_emojis)
+
+
 async def load_top_reactions(telegram_client, limit: int = 100) -> int:
     try:
         result = await telegram_client(functions.messages.GetTopReactionsRequest(limit=limit, hash=0))
@@ -92,31 +126,6 @@ def clean_text(text: str) -> str:
 def contains_blacklisted(text: str) -> bool:
     lowered = clean_text(text)
     return any(item in lowered for item in BLACKLIST_CONTAINS)
-
-
-def detect_label(text: str) -> str:
-    lowered = clean_text(text)
-    if any(word in lowered for word in ("?", "почему", "как", "что", "кто", "где", "когда", "зачем", "разве")):
-        return "question"
-    if any(word in lowered for word in ("ахах", "хаха", "лол", "ржу", "шут", "прикол", "lol", "lmao", "xd")):
-        return "funny"
-    if any(word in lowered for word in ("жесть", "мощно", "топ", "огонь", "база", "разнос", "легенда")):
-        return "hype"
-    if any(word in lowered for word in ("неа", "не факт", "сомнитель", "вряд", "спорно", "не думаю", "не соглаш")):
-        return "disagreement"
-    if any(word in lowered for word in ("согл", "реал", "именно", "в точку", "факт", "конечно", "верно")):
-        return "agreement"
-    if any(word in lowered for word in ("ничего себе", "шок", "неожидан", "wtf", "omg", "чего")):
-        return "shock"
-    if any(word in lowered for word in ("груст", "жалк", "обидн", "печаль", "тяжело", "сочув")):
-        return "sad"
-    if any(word in lowered for word in ("люби", "мил", "кайф", "❤️", "love", "тепло")):
-        return "love"
-    if any(word in lowered for word in ("бесит", "злит", "злой", "ненавиж", "раздраж", "rage")):
-        return "anger"
-    if any(word in lowered for word in GREETING_WORDS):
-        return "greeting"
-    return "neutral"
 
 
 def get_image_mime_type(event) -> str | None:
@@ -168,8 +177,84 @@ def is_greeting_for_bot(text: str, mentioned: bool) -> bool:
 
 
 def pick_reaction_by_label(label: str) -> str:
-    pool = available_reaction_emojis or SAFE_EMOJIS
-    return random.choice(pool or SAFE_EMOJIS)
+    pool = REACTIONS.get(label) or REACTIONS.get("neutral") or SAFE_EMOJIS
+    # prefer context emojis that Telegram actually allows in this account
+    allowed = [
+        emoji for emoji in pool
+        if _normalize_reaction_emoji(emoji) in available_reaction_emojis
+    ]
+    if allowed:
+        return random.choice(allowed)
+    if pool:
+        return random.choice(pool)
+    return random.choice(available_reaction_emojis or SAFE_EMOJIS)
+
+
+ALL_REACTIONS = object()  # сентинел: чат разрешает все реакции
+allowed_reactions_by_chat: dict[int, object] = {}
+
+
+async def get_allowed_reactions(event):
+    """Что разрешает конкретный чат: ALL_REACTIONS / множество эмодзи / set()
+    (реакции выключены). Результат кешируется по чату."""
+    chat_id = event.chat_id
+    if chat_id in allowed_reactions_by_chat:
+        return allowed_reactions_by_chat[chat_id]
+
+    result: object = ALL_REACTIONS
+    try:
+        if not event.is_private:
+            entity = await event.get_chat()
+            if isinstance(entity, types.Channel):
+                full = await client(functions.channels.GetFullChannelRequest(entity))
+            else:
+                full = await client(functions.messages.GetFullChatRequest(chat_id=entity.id))
+            avail = getattr(getattr(full, "full_chat", None), "available_reactions", None)
+            if isinstance(avail, types.ChatReactionsSome):
+                result = {
+                    _normalize_reaction_emoji(r.emoticon)
+                    for r in avail.reactions
+                    if isinstance(r, types.ReactionEmoji)
+                }
+            elif isinstance(avail, types.ChatReactionsNone):
+                result = set()
+            # ChatReactionsAll или поле отсутствует -> ALL_REACTIONS
+    except Exception as error:
+        print(f"Allowed reactions fetch failed: {type(error).__name__}: {error}")
+        result = ALL_REACTIONS
+
+    allowed_reactions_by_chat[chat_id] = result
+    return result
+
+
+async def choose_reaction(event, label: str) -> str | None:
+    """Выбирает эмодзи под контекст/стиль чата и СТРОГО из разрешённых в чате,
+    чтобы не словить 'Invalid reaction provided'. None — если реагировать нельзя."""
+    chat_id = event.chat_id
+    allowed = await get_allowed_reactions(event)
+    if allowed is not ALL_REACTIONS and not allowed:
+        return None  # реакции в чате выключены — даже не пытаемся
+
+    # Предпочтительный набор: иногда в стиле чата (из БД), иначе по настроению.
+    pool: list[str] = []
+    if ENABLE_MESSAGE_DB and random.random() < CHAT_EMOJI_CHANCE:
+        pool = [_normalize_reaction_emoji(e) for e in await popular_emojis(chat_id, limit=10)]
+    if not pool:
+        base = REACTIONS.get(label) or REACTIONS.get("neutral") or SAFE_EMOJIS
+        pool = [_normalize_reaction_emoji(e) for e in base]
+
+    if allowed is ALL_REACTIONS:
+        # чат разрешает всё — оставляем только настоящие реакции Telegram
+        candidates = [e for e in pool if e in available_reaction_emojis] or [
+            e for e in available_reaction_emojis if e in pool
+        ]
+        if not candidates:
+            candidates = list(available_reaction_emojis) or list(SAFE_EMOJIS)
+    else:
+        # чат разрешает только конкретный список
+        candidates = [e for e in pool if e in allowed] or list(allowed)
+
+    return random.choice(candidates) if candidates else None
 
 
 def _schedule_next_reaction(state: dict[str, int], current_count: int) -> None:
@@ -277,9 +362,14 @@ async def handle_group_message(event):
 
     message_counts[chat_id] += 1
     reaction_state = reaction_state_by_chat[chat_id]
-    label = detect_label(cleaned)
+    label = detect_label(cleaned)  # дешёвый детект по словам; ИИ — ниже, если нужен
     speaker_name = remember_user_message(chat_id, sender, cleaned)
     recent_messages[chat_id].append(f"{speaker_name}: {cleaned}")
+
+    # Сохраняем случайный реальный текст человека (как есть, с эмодзи) в БД,
+    # чтобы бот учился стилю чата и переиспользовал фразы.
+    if ENABLE_MESSAGE_DB and text.strip() and random.random() < MESSAGE_SAVE_CHANCE:
+        await save_message(chat_id, speaker_name, text.strip(), label)
 
     reply_to_bot = False
     if event.is_reply:
@@ -309,23 +399,31 @@ async def handle_group_message(event):
             _maybe_start_burst(reaction_state)
             _schedule_next_reaction(reaction_state, message_counts[chat_id])
 
+    # Решение об ответе считаем заранее, чтобы знать, нужна ли точная эмоция.
+    should_reply = False
+    if ENABLE_TEXT_REPLIES:
+        should_reply = bool(reply_to_bot)
+        if not should_reply:
+            base_chance = _spontaneous_reply_chance(label)
+            last_text_at = chat_state[chat_id]["last_text_at"]
+            if last_text_at and (time.time() - last_text_at) > 300:
+                base_chance += 0.08
+
+            if message_counts[chat_id] >= 4 and message_counts[chat_id] % random.randint(3, 5) == 0:
+                should_reply = True
+            else:
+                should_reply = random.random() < base_chance
+
+    # Уточняем эмоцию моделью (по смыслу) только когда ставим реакцию — там
+    # эмоция выбирает эмодзи. Для ответа это не нужно: сам ответ генерит ИИ,
+    # который и так понимает смысл, поэтому второй вызов модели не делаем.
     if should_react:
-        await send_reaction(event, pick_reaction_by_label(label), label)
+        label = await detect_emotion(cleaned)
 
-    if not ENABLE_TEXT_REPLIES:
-        return
-
-    should_reply = bool(reply_to_bot)
-    if not should_reply:
-        base_chance = _spontaneous_reply_chance(label)
-        last_text_at = chat_state[chat_id]["last_text_at"]
-        if last_text_at and (time.time() - last_text_at) > 300:
-            base_chance += 0.08
-
-        if message_counts[chat_id] >= 4 and message_counts[chat_id] % random.randint(3, 5) == 0:
-            should_reply = True
-        else:
-            should_reply = random.random() < base_chance
+    if should_react:
+        emoji = await choose_reaction(event, label)
+        if emoji:
+            await send_reaction(event, emoji, label)
 
     if not should_reply:
         return
@@ -337,6 +435,7 @@ async def handle_group_message(event):
         speaker_name=speaker_name,
         bot_names=[BOT_NAME, *BOT_NAME_HINTS],
         label=label,
+        chat_id=chat_id,
         mentioned=mentioned,
         recent_bot_texts=list(recent_bot_texts[chat_id]),
     )
@@ -353,11 +452,3 @@ async def handle_group_message(event):
         return
 
     await send_text(event, reply, reply_mode=reply_mode)
-
-
-def maybe_start_inactivity_loop(current_task):
-    return current_task
-
-
-def get_local_hour() -> int:
-    return _get_local_hour()
